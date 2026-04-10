@@ -1,0 +1,4 @@
+# Minimal placeholder configuration for OpenManus overlay
+# Replace with runtime-specific values as needed.
+[default]
+model = "openrouter/default"

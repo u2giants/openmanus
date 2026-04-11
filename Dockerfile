@@ -6,6 +6,6 @@ COPY custom_tools/ ./custom_tools/
 COPY config.toml ./config/config.toml
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
-RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir structlog
+RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir structlog "daytona-sdk"
 EXPOSE 8000
 CMD ["./entrypoint.sh"]

@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  openmanus-backend:
+    image: 'ghcr.io/u2giants/openmanus:main'
+    restart: unless-stopped
+    environment:
+      - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
+    ports:
+      - '8000:8000'
+  open-webui:
+    image: 'ghcr.io/open-webui/open-webui:main'
+    restart: unless-stopped
+    environment:
+      - 'OPENAI_API_BASE_URL=http://openmanus-backend:8000/v1'
+      - ENABLE_TERMINAL=true
+    ports:
+      - '3000:8080'
+    depends_on:
+      - openmanus-backend
+    volumes:
+      - 'open-webui-data:/app/backend/data'
+volumes:
+  open-webui-data: null

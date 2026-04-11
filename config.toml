@@ -1,4 +1,12 @@
-# Minimal placeholder configuration for OpenManus overlay
-# Replace with runtime-specific values as needed.
-[default]
-model = "openrouter/default"
+# OpenManus runtime configuration
+# Env vars are substituted by entrypoint.sh at container startup
+
+[llm]
+model = "gpt-4o"
+base_url = "https://api.openai.com/v1"
+api_key = "__OPENAI_API_KEY__"
+max_tokens = 4096
+temperature = 0.0
+
+[daytona]
+daytona_api_key = "__DAYTONA_API_KEY__"

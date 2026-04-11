@@ -7,5 +7,9 @@ COPY config.toml ./config/config.toml
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir structlog "daytona-sdk"
+# Shim: daytona-sdk installs as 'daytona_sdk' module but code imports 'from daytona import ...'
+RUN mkdir -p /usr/local/lib/python3.11/site-packages/daytona && \
+    echo 'from daytona_sdk import *' > /usr/local/lib/python3.11/site-packages/daytona/__init__.py && \
+    echo 'from daytona_sdk import Daytona, DaytonaConfig, Sandbox, SandboxState' >> /usr/local/lib/python3.11/site-packages/daytona/__init__.py
 EXPOSE 8000
 CMD ["./entrypoint.sh"]

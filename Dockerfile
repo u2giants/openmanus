@@ -4,6 +4,6 @@ WORKDIR /app
 RUN git clone https://github.com/FoundationAgents/OpenManus.git .
 COPY custom_tools/ ./custom_tools/
 COPY config.toml ./config.toml
-RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
+RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt
 EXPOSE 8000
 CMD ["python", "main.py"]

@@ -44,7 +44,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
       
       - name: Trigger Coolify deployment
-        if: secrets.COOLIFY_WEBHOOK_URL != ''
         run: |
-          curl -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json"
+          if [ -n "${{ secrets.COOLIFY_WEBHOOK_URL }}" ]; then
+            curl -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json"
+          else
+            echo "COOLIFY_WEBHOOK_URL not set, skipping deployment notification"
+          fi

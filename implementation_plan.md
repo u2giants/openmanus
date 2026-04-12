@@ -1,226 +1,288 @@
-# Implementation Plan: Fix OpenManus Backend Restart Loop
+# Implementation Plan: Enable Browser Automation with Shared noVNC Visibility
 
 ## Problem
 
-The `openmanus-backend` container on Coolify is crash-looping every ~68 seconds with this error:
+When a user asks OpenManus to browse the web (e.g., "navigate to fidelity.com and download statements"), the agent crashes with:
 
 ```
-File "/app/main.py", line 20, in main
-    prompt = args.prompt if args.prompt else input("Enter your prompt: ")
-EOFError: EOF when reading a line
+RetryError[<Future at 0x7351fe504950 state=finished raised NotFoundError>]
 ```
 
-### Root Cause (CONFIRMED via container logs)
+### Root Cause Analysis
 
-**The upstream OpenManus `main.py` is a CLI tool, not an HTTP server.** It calls `input("Enter your prompt: ")` which immediately fails with `EOFError` because Docker containers have no interactive stdin. The container starts, Python loads successfully, Daytona initializes correctly, then `input()` crashes, and `restart: unless-stopped` restarts it in an infinite loop.
+The upstream OpenManus **already has browser automation built in**:
+- [`app/tool/browser_use_tool.py`](https://github.com/FoundationAgents/OpenManus/blob/main/app/tool/browser_use_tool.py) — `BrowserUseTool` using `browser-use` library + Playwright
+- [`app/agent/manus.py`](https://github.com/FoundationAgents/OpenManus/blob/main/app/agent/manus.py) — `Manus` agent includes `BrowserUseTool()` in its default tools
+- [`requirements.txt`](https://github.com/FoundationAgents/OpenManus/blob/main/requirements.txt) — includes `playwright~=1.51.0` and `browser-use~=0.1.40`
 
-### Deeper Architecture Problem
+**However, it fails because:**
 
-`open-webui` (the frontend at `https://manus.designflow.app`) is configured with:
-```yaml
-OPENAI_API_BASE_URL=http://openmanus-backend:8000/v1
-```
+1. **No Chromium binary installed**: The [`Dockerfile`](Dockerfile) never runs `playwright install chromium`. Playwright is installed as a Python package but has no browser binary to launch. This causes the `NotFoundError`.
 
-This means open-webui expects an **OpenAI-compatible HTTP API** (specifically `/v1/chat/completions` and `/v1/models` endpoints) at port 8000. But OpenManus has **no HTTP server mode**. It only has:
+2. **No display server**: `BrowserUseTool._ensure_browser_initialized()` defaults to `headless=False`, which tries to open a visible browser window. In a Docker container with no X11/display, this would fail even if Chromium were installed.
 
-- `main.py` — interactive CLI (crashes in Docker)
-- `run_mcp_server.py` — MCP stdio server (not HTTP)
-- `protocol/a2a/app/main.py` — A2A protocol server on port 10000 (not OpenAI-compatible)
+3. **No `[browser]` config section**: Our [`config.toml`](config.toml) only has `[llm]` and `[daytona]` sections. Without a `[browser]` section, the tool uses defaults (`headless=False`, no CDP/WSS URL).
 
-**None of the suspected root causes from the ticket were correct:**
+4. **noVNC container is isolated**: The [`novnc` service](docker-compose.yaml:48) runs a full Ubuntu MATE desktop (`lscr.io/linuxserver/webtop:ubuntu-mate`) but has no connection to the OpenManus backend. The agent can't see or control anything in it.
 
-| Suspected Cause | Actual Status |
-|---|---|
-| ❌ Tailscale volume mount | Coolify's live compose has no volume mount (`Binds: null`) — not the issue |
-| ✅ `python main.py` crashes | **YES** — `input()` → `EOFError` because no stdin in Docker |
-| ❌ Port conflict | Port 8001:8000 mapping works fine, container starts |
-| ❌ Missing env vars | `entrypoint.sh` IS running, env vars are substituted correctly |
+### User's Requirements
 
-### What's Already Available in the Image
-
-- **FastAPI** 0.115.14 ✅ (already installed)
-- **uvicorn** 0.34.3 ✅ (already installed)
-- **openai** SDK ✅ (already installed)
-- **Manus agent** class at `app.agent.manus.Manus` ✅
-- **SandboxManus agent** at `app.agent.sandbox_agent.SandboxManus` ✅
+The user wants:
+1. **Agent can browse the web** — navigate to sites, click elements, fill forms, download files
+2. **Shared visibility** — both the user and agent can see the same browser via noVNC
+3. **Human-in-the-loop** — user can log in manually, then hand control back to the agent
+4. **Practical use case** — download 10 years of Fidelity statements
 
 ## Solution
 
-Create a **lightweight FastAPI server** (`server.py`) that:
-1. Exposes OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints
-2. Accepts chat messages from open-webui
-3. Delegates to the OpenManus `Manus` agent
-4. Returns responses in OpenAI chat completion format
-5. Runs on `0.0.0.0:8000` via uvicorn
+### Architecture: Headless Playwright in OpenManus + Separate noVNC for Observation
 
-Update `entrypoint.sh` to run `server.py` instead of `main.py`.
-
-### Architecture
+After evaluating multiple approaches, the recommended architecture is:
 
 ```
-open-webui (port 3000)
-    │
-    │  POST /v1/chat/completions
-    │  GET  /v1/models
-    ▼
-server.py (FastAPI, port 8000)   ← NEW FILE
-    │
-    │  await agent.run(prompt)
-    ▼
-app.agent.manus.Manus            ← existing OpenManus agent
-    │
-    │  LLM calls via config.toml
-    ▼
-OpenRouter API (openai/gpt-4o)
+┌─────────────────────────────────────────────────────────┐
+│  User's Browser                                          │
+│                                                          │
+│  ┌──────────────────┐    ┌─────────────────────────┐    │
+│  │ manus.designflow │    │  vnc.designflow.app     │    │
+│  │ .app (Open WebUI)│    │  (noVNC — shared view)  │    │
+│  │                  │    │                          │    │
+│  │  Chat with agent │    │  See what agent sees     │    │
+│  │  Type commands   │    │  Take over mouse/kbd    │    │
+│  └────────┬─────────┘    └──────────▲──────────────┘    │
+│           │                         │                    │
+└───────────┼─────────────────────────┼────────────────────┘
+            │                         │
+            ▼                         │ VNC protocol
+   ┌────────────────┐       ┌────────┴───────────┐
+   │ openmanus-     │       │  novnc container   │
+   │ backend        │       │  (webtop:ubuntu-   │
+   │                │  CDP  │   mate)             │
+   │ server.py ─────┼──────►│                     │
+   │ Manus agent    │       │  Chromium browser   │
+   │ BrowserUseTool │       │  running inside     │
+   │                │       │  with --remote-     │
+   │                │       │  debugging-port     │
+   └────────────────┘       └─────────────────────┘
 ```
+
+**Key insight**: Instead of running Playwright's own Chromium inside the openmanus-backend container, we run Chromium **inside the noVNC/webtop container** with Chrome DevTools Protocol (CDP) enabled. The OpenManus `BrowserUseTool` connects to it via `cdp_url`. This gives us:
+
+- ✅ **Shared visibility**: User sees the browser in noVNC, agent controls it via CDP
+- ✅ **Human-in-the-loop**: User can take over mouse/keyboard in noVNC at any time
+- ✅ **No display server needed in backend**: Backend connects remotely via CDP
+- ✅ **Downloads visible**: Files download to the noVNC container's filesystem, visible to user
+- ✅ **Minimal changes**: Uses existing upstream `BrowserUseTool` + `[browser]` config
+
+### Alternative Considered: Headless Playwright in Backend Only
+
+Run Playwright headless inside the openmanus-backend container. Simpler but:
+- ❌ User can't see what the agent is doing in real-time
+- ❌ No human-in-the-loop (can't log in manually)
+- ❌ No shared browser session
+- This would be a fallback if CDP approach proves too complex
+
+### Alternative Considered: Playwright MCP Server
+
+Run a separate Playwright MCP server container. Rejected because:
+- ❌ OpenManus already has `BrowserUseTool` built in — adding MCP is redundant
+- ❌ More containers, more complexity
+- ❌ MCP stdio transport doesn't work across containers (would need SSE)
 
 ## Step-by-Step Tasks
 
-### Task 1: Create `server.py` (NEW FILE — Builder)
+### Task 1: Install Chromium in the noVNC/Webtop Container
 
-Create `/app/server.py` (copied into image via Dockerfile) that implements:
+**Owner**: DevOps / Builder  
+**Files**: [`docker-compose.yaml`](docker-compose.yaml)
 
-```python
-# Minimal OpenAI-compatible API wrapper around OpenManus Manus agent
-# Endpoints:
-#   GET  /v1/models          → list available models
-#   POST /v1/chat/completions → run Manus agent with last user message
-#   GET  /health              → health check
+The `lscr.io/linuxserver/webtop:ubuntu-mate` image already includes a desktop environment. We need to:
+
+1. Add a custom startup script that installs Chromium and launches it with CDP enabled
+2. Create a `novnc-startup.sh` script that:
+   - Installs `chromium-browser` (if not already present)
+   - Launches Chromium with `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0`
+   - Keeps the desktop session alive
+3. Mount this script into the noVNC container via docker-compose volume
+4. Expose port 9222 internally (not publicly — only to the Docker network)
+
+**Config in `docker-compose.yaml`**:
+```yaml
+novnc:
+  image: lscr.io/linuxserver/webtop:ubuntu-mate
+  restart: unless-stopped
+  environment:
+    - PUID=1000
+    - PGID=1000
+    - TZ=America/New_York
+    - CUSTOM_USER=abc
+    - SUBFOLDER=/
+    - DOCKER_MODS=linuxserver/mods:universal-package-install
+    - INSTALL_PACKAGES=chromium-browser
+  volumes:
+    - novnc-data:/config
+    - ./novnc-startup.sh:/custom-cont-init.d/99-start-chromium.sh:ro
+  shm_size: '1gb'
+  # Port 9222 exposed only on Docker network, not publicly
+  expose:
+    - "9222"
+  labels:
+    # ... existing traefik labels ...
 ```
 
-**Key design decisions for `server.py`:**
-- Use `app.agent.manus.Manus` (not SandboxManus) — it's the standard agent
-- Extract the last user message from the chat completion request as the prompt
-- Run `agent.run(prompt)` and capture the result
-- Return a properly formatted OpenAI chat completion response
-- Create a fresh agent per request (agents are stateful, not thread-safe)
-- Add a `/health` endpoint for monitoring
-- Handle errors gracefully — return OpenAI-format error responses, don't crash the server
-- Use `asyncio` properly — Manus agent is async
+### Task 2: Create noVNC Chromium Startup Script
 
-**Skeleton structure:**
-```python
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-import uvicorn
-import asyncio
-import uuid
-import time
+**Owner**: Builder  
+**Files**: NEW `novnc-startup.sh`
 
-app = FastAPI(title="OpenManus API")
+Create a script that auto-launches Chromium with CDP on the webtop desktop:
 
-@app.get("/v1/models")
-async def list_models():
-    return {"object": "list", "data": [{"id": "manus", "object": "model", ...}]}
-
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
-    body = await request.json()
-    messages = body.get("messages", [])
-    # Extract last user message
-    prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    # Run Manus agent
-    agent = await Manus.create()
-    try:
-        result = await agent.run(prompt)
-    finally:
-        await agent.cleanup()
-    # Return OpenAI-format response
-    return {"id": f"chatcmpl-{uuid.uuid4().hex[:8]}", "object": "chat.completion", ...}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+```bash
+#!/bin/bash
+# Wait for desktop to be ready
+sleep 10
+# Launch Chromium with remote debugging enabled
+su -c 'DISPLAY=:1 chromium-browser \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-gpu \
+  --remote-debugging-port=9222 \
+  --remote-debugging-address=0.0.0.0 \
+  --user-data-dir=/config/chromium-profile \
+  &' abc
 ```
 
-### Task 2: Update `entrypoint.sh` (MODIFY)
+### Task 3: Update `config.toml` with Browser Configuration
 
-Change from:
-```sh
-exec python main.py
+**Owner**: Builder  
+**Files**: [`config.toml`](config.toml)
+
+Add a `[browser]` section that tells `BrowserUseTool` to connect via CDP to the noVNC container's Chromium:
+
+```toml
+[browser]
+headless = false
+disable_security = true
+cdp_url = "http://novnc:9222"
 ```
-To:
-```sh
+
+The `cdp_url` uses the Docker Compose service name `novnc` which resolves within the Docker network. The `headless = false` is correct here because the browser is running on the noVNC desktop (which has a display), not in the backend container.
+
+### Task 4: Install Playwright in the Backend Container (Fallback/Library Only)
+
+**Owner**: Builder  
+**Files**: [`Dockerfile`](Dockerfile)
+
+Even though we're connecting to a remote browser via CDP, the `browser-use` Python library still needs Playwright installed. We need to ensure the Playwright Python bindings work. We do NOT need to install Chromium binaries in the backend container since we're using CDP.
+
+Update the Dockerfile to:
+1. Install system dependencies needed by Playwright Python bindings
+2. Run `playwright install-deps` (installs OS-level dependencies only, not browser binaries)
+
+```dockerfile
+# After pip install
+RUN pip install --no-cache-dir playwright && playwright install-deps
+```
+
+Note: `playwright install-deps` installs system libraries (libglib, libnss, etc.) that the Playwright Python package needs even when connecting to a remote browser. `playwright install chromium` is NOT needed since we use CDP.
+
+### Task 5: Update `entrypoint.sh` for Browser Config Substitution
+
+**Owner**: Builder  
+**Files**: [`entrypoint.sh`](entrypoint.sh)
+
+The `cdp_url` in config.toml should use the Docker service name, which is static. No env var substitution needed for this. However, we should add a `BROWSER_CDP_URL` env var for flexibility:
+
+```bash
+#!/bin/sh
+sed -i "s|__OPENAI_API_KEY__|${OPENAI_API_KEY:-placeholder}|g" /app/config/config.toml
+sed -i "s|__DAYTONA_API_KEY__|${DAYTONA_API_KEY:-not-configured}|g" /app/config/config.toml
+sed -i "s|__BROWSER_CDP_URL__|${BROWSER_CDP_URL:-http://novnc:9222}|g" /app/config/config.toml
 exec python server.py
 ```
 
-### Task 3: Update `Dockerfile` (MODIFY)
-
-Add `COPY server.py ./server.py` after the existing COPY lines:
-```dockerfile
-COPY config.toml ./config/config.toml
-COPY entrypoint.sh ./entrypoint.sh
-COPY server.py ./server.py          # ← ADD THIS LINE
+And update `config.toml`:
+```toml
+[browser]
+headless = false
+disable_security = true
+cdp_url = "__BROWSER_CDP_URL__"
 ```
 
-### Task 4: Remove Tailscale volume mount from `docker-compose.yaml` (MODIFY)
+### Task 6: Add `openmanus-backend` Dependency on `novnc`
 
-Remove the `volumes` section from `openmanus-backend` service:
+**Owner**: Builder  
+**Files**: [`docker-compose.yaml`](docker-compose.yaml)
+
+Ensure the backend waits for the noVNC container to be ready:
+
 ```yaml
-# REMOVE:
-    volumes:
-      - /mnt/tailscale/souls:/app/custom_souls
+openmanus-backend:
+  depends_on:
+    - novnc
 ```
 
-The Tailscale path doesn't exist on the Coolify server (empty directory at `/mnt/tailscale/souls`). Coolify is already ignoring it in its generated compose, but we should clean up the repo to avoid confusion.
+### Task 7: Verify noVNC Container is Running and Accessible
 
-### Task 5: Verify port mapping in `docker-compose.yaml`
+**Owner**: DevOps  
+**Action**: After deployment, verify:
+1. `vnc.designflow.app` loads the noVNC desktop
+2. Chromium is running inside the desktop
+3. CDP is accessible from the backend container: `curl http://novnc:9222/json/version`
 
-Keep `8000:8000` in the repo's compose. Coolify maps it to `8001:8000` in its generated compose, which is fine — `open-webui` connects via Docker network name (`openmanus-backend:8000`), not via host port.
+### Task 8: Test End-to-End Browser Automation
 
-### Task 6: Push, build, deploy (Reviewer-Pusher + DevOps)
+**Owner**: DevOps / Manual  
+**Action**:
+1. Open `vnc.designflow.app` in a browser tab — you should see the Ubuntu MATE desktop with Chromium
+2. Open `manus.designflow.app` in another tab
+3. Ask the agent: "Navigate to example.com"
+4. Watch the noVNC tab — Chromium should navigate to example.com
+5. Verify the agent reports success in the chat
 
-1. Push changes to GitHub → triggers CI
-2. CI builds new image with `server.py` baked in
-3. Coolify deploys (or manual pull + recreate if webhook fails)
-4. Verify backend starts and stays running
+### Task 9: Test Human-in-the-Loop Flow
 
-## Files Changed
-
-| File | Action | Description |
-|---|---|---|
-| `server.py` | **CREATE** | FastAPI OpenAI-compatible API wrapper |
-| `entrypoint.sh` | **MODIFY** | Change `exec python main.py` → `exec python server.py` |
-| `Dockerfile` | **MODIFY** | Add `COPY server.py ./server.py` |
-| `docker-compose.yaml` | **MODIFY** | Remove Tailscale volume mount |
-
-## New Image Build Required?
-
-**YES** — a new Docker image build + push is required. The fix involves:
-1. A new file (`server.py`) that must be baked into the image
-2. The entrypoint change (already in image via COPY)
-
-A Coolify env var change alone is NOT sufficient.
+**Owner**: Manual  
+**Action**:
+1. Ask the agent: "Navigate to fidelity.com"
+2. In the noVNC tab, manually log in to Fidelity
+3. Tell the agent: "I've logged in. Now navigate to the statements page and download the last 12 months of statements"
+4. Watch the agent work in noVNC while you monitor
 
 ## Validation Approach
 
-1. **Startup validation**: Container logs should show uvicorn starting on `0.0.0.0:8000` (no `EOFError`)
-2. **Health check**: `curl http://localhost:8001/health` from the Coolify server returns `{"status": "ok"}`
-3. **Models endpoint**: `curl http://localhost:8001/v1/models` returns a model list
-4. **Chat completion**: `curl -X POST http://localhost:8001/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"manus","messages":[{"role":"user","content":"What is 2+2?"}]}'` returns a response
-5. **Container stability**: `docker ps` shows the backend as `Up` for >5 minutes (no restart)
-6. **Frontend integration**: `https://manus.designflow.app` can send a message and get a response
+| Check | Method | Expected Result |
+|-------|--------|-----------------|
+| Chromium running in noVNC | Visit `vnc.designflow.app` | See Chromium on desktop |
+| CDP accessible | `docker exec openmanus-backend curl http://novnc:9222/json/version` | JSON response with Chrome version |
+| Browser tool works | Ask agent "go to example.com" | Agent navigates, noVNC shows example.com |
+| Screenshots work | Ask agent "take a screenshot of the current page" | Agent returns screenshot in chat |
+| Human takeover | Click in noVNC while agent is idle | Mouse/keyboard work in noVNC |
+| Downloads work | Ask agent to download a file | File appears in noVNC container |
 
 ## Rollback Plan
 
-1. **If new image breaks**: Revert the GitHub commit, push, and redeploy. The old image (crash-looping) is no worse than current state.
-2. **If server.py has import errors**: SSH into server, `docker exec` into container, run `python -c "from app.agent.manus import Manus"` to debug.
-3. **If open-webui can't connect**: Check Docker network connectivity with `docker exec open-webui curl http://openmanus-backend:8000/health`.
-4. **Nuclear option**: Stop `openmanus-backend` entirely — `open-webui` will still serve its UI, just without backend agent functionality.
+1. **If CDP connection fails**: Remove `[browser]` section from `config.toml`, revert to no browser config. The agent will still work for non-browser tasks.
+2. **If noVNC container breaks**: Revert `docker-compose.yaml` to previous version (remove startup script mount, remove expose 9222). noVNC will still work as a plain desktop.
+3. **If Playwright deps break the backend image**: Remove the `playwright install-deps` line from Dockerfile. Browser tool won't work but server.py will still serve non-browser requests.
+4. **Full rollback**: Revert all changes to the previous commit. The system returns to the state described in [`CURRENT_TASK.md`](CURRENT_TASK.md) — working chat, no browser automation.
+
+## Files Changed Summary
+
+| File | Action | Description |
+|------|--------|-------------|
+| [`config.toml`](config.toml) | MODIFY | Add `[browser]` section with `cdp_url` |
+| [`Dockerfile`](Dockerfile) | MODIFY | Add `playwright install-deps` for system libraries |
+| [`docker-compose.yaml`](docker-compose.yaml) | MODIFY | Add Chromium install, expose 9222, startup script mount, depends_on |
+| [`entrypoint.sh`](entrypoint.sh) | MODIFY | Add `BROWSER_CDP_URL` substitution |
+| `novnc-startup.sh` | NEW | Script to launch Chromium with CDP in noVNC container |
 
 ## Risk Assessment
 
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| Manus agent import fails at server startup | Low | Agent already loads successfully in current crash loop |
-| Agent.run() hangs or takes too long | Medium | Add timeout to agent.run() call (e.g., 300s) |
-| Memory leak from creating agent per request | Medium | Monitor; future: add agent pooling |
-| open-webui sends unexpected request format | Low | Log full request body, handle gracefully |
-| Coolify webhook still returns 503 | High | Manual `docker pull` + recreate as fallback |
-
-## Key Constraint
-
-**Do NOT touch the `open-webui` service** — it's live at `https://manus.designflow.app` and working. All changes are isolated to the `openmanus-backend` service.
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| CDP connection refused (timing) | Medium | Agent can't browse | Add retry logic or health check wait |
+| Webtop image doesn't have chromium in apt | Low | No browser in noVNC | Use `DOCKER_MODS` or manual install in startup script |
+| Playwright Python bindings incompatible with remote CDP | Low | Browser tool fails | Test with `browser-use` library's CDP support first |
+| noVNC container OOM with Chromium | Medium | Container crashes | Increase `shm_size` to 2gb, add memory limit |
+| Fidelity blocks automated browsing | High | Can't download statements | User handles login/captcha via noVNC, agent does navigation |

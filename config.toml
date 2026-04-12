@@ -10,3 +10,8 @@ temperature = 0.0
 
 [daytona]
 daytona_api_key = "__DAYTONA_API_KEY__"
+
+[browser]
+headless = false
+disable_security = true
+cdp_url = "__BROWSER_CDP_URL__"

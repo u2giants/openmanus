@@ -59,3 +59,28 @@ Update [`entrypoint.sh`](entrypoint.sh) to run `python server.py` instead of `py
 **Risk**: Creating an agent per request may be slow (agent initialization takes ~1s) and could leak memory. Future improvement: add agent pooling or caching.
 
 **Requires**: New Docker image build + push. Coolify env var change alone is NOT sufficient.
+
+---
+
+## Decision 2026-04-12-005: Browser Automation via CDP to noVNC Container's Chromium
+
+**Context**: User asked OpenManus to browse fidelity.com and got `RetryError[NotFoundError]`. Investigation revealed that while upstream OpenManus already includes [`BrowserUseTool`](https://github.com/FoundationAgents/OpenManus/blob/main/app/tool/browser_use_tool.py) (Playwright + browser-use library) wired into the [`Manus`](https://github.com/FoundationAgents/OpenManus/blob/main/app/agent/manus.py) agent, it fails because: (1) no Chromium binary is installed in the Docker image (`playwright install chromium` never runs), (2) no display server exists in the backend container for non-headless mode, and (3) no `[browser]` config section exists in [`config.toml`](config.toml).
+
+**Decision**: Run Chromium inside the existing noVNC/webtop container (`lscr.io/linuxserver/webtop:ubuntu-mate`) with Chrome DevTools Protocol (CDP) enabled on port 9222. Configure OpenManus `BrowserUseTool` to connect via `cdp_url = "http://novnc:9222"` in the `[browser]` section of [`config.toml`](config.toml). Install only Playwright system dependencies (`playwright install-deps`) in the backend container — no browser binary needed since we connect remotely.
+
+**Rationale**: This approach satisfies all user requirements simultaneously:
+- **Shared visibility**: User sees the browser live in noVNC at `vnc.designflow.app`
+- **Human-in-the-loop**: User can take over mouse/keyboard in noVNC (e.g., to log in to Fidelity)
+- **Agent control**: OpenManus controls the same browser via CDP protocol
+- **Minimal changes**: Uses existing upstream `BrowserUseTool` with its built-in `cdp_url` config support (see [`BrowserSettings.cdp_url`](https://github.com/FoundationAgents/OpenManus/blob/main/app/config.py) and [`_ensure_browser_initialized()`](https://github.com/FoundationAgents/OpenManus/blob/main/app/tool/browser_use_tool.py))
+- **No new containers**: Reuses the existing noVNC container, just adds Chromium + CDP to it
+
+**Alternatives considered**:
+- **Headless Playwright in backend container only** — rejected: no shared visibility, no human-in-the-loop capability. User can't log in manually.
+- **Separate Playwright MCP server container** — rejected: OpenManus already has `BrowserUseTool` built in; adding an MCP server is redundant complexity. MCP stdio transport doesn't work across containers.
+- **browser-use with its own headless browser + VNC streaming** — rejected: over-engineered; the noVNC container already provides the desktop environment.
+- **Daytona sandbox with VNC** — rejected: Daytona is not configured (`not-configured` placeholder), and adding it introduces a cloud dependency for something that can run locally.
+
+**Risk**: CDP connection timing — if Chromium hasn't started in the noVNC container when the agent tries to connect, it will fail. Mitigation: add retry logic or a health check wait. Also, `browser-use` library's CDP support needs verification — it uses Playwright's `cdp_url` parameter which is well-documented.
+
+**Requires**: Docker image rebuild (for `playwright install-deps`), updated `config.toml`, updated `docker-compose.yaml`, new `novnc-startup.sh` script. Full plan in [`implementation_plan.md`](implementation_plan.md).

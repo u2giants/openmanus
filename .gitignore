@@ -11,6 +11,10 @@ value.PHP_EOL
 response.html
 app_bundle.js
 *.debug.*
+coolify_app*.json
+*.json
+!package.json
+!package-lock.json
 # Log archives
 *.zip
 job_logs.txt

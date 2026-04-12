@@ -23,6 +23,20 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    import os, httpx
+    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://openrouter.ai/api/v1/models/user",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch OpenRouter models: {e}")
+    # Fallback: return the local manus model
     return {
         "object": "list",
         "data": [

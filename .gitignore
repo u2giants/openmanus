@@ -15,6 +15,9 @@ coolify_app*.json
 *.json
 !package.json
 !package-lock.json
+update_coolify_compose.py
+docker_compose_raw)
+deployment_uuid
 # Log archives
 *.zip
 job_logs.txt

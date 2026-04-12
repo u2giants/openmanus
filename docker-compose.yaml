@@ -18,6 +18,8 @@ services:
     restart: unless-stopped
     environment:
       - 'OPENAI_API_BASE_URL=http://openmanus-backend:8000/v1'
+      - 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}'
+      - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
       - ENABLE_TERMINAL=true
     ports:
       - '3000:8080'
@@ -25,5 +27,16 @@ services:
       - openmanus-backend
     volumes:
       - 'open-webui-data:/app/backend/data'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.open-webui.rule=Host(`manus.designflow.app`)
+      - traefik.http.routers.open-webui.entrypoints=https
+      - traefik.http.routers.open-webui.tls=true
+      - traefik.http.routers.open-webui.tls.certresolver=letsencrypt
+      - traefik.http.services.open-webui.loadbalancer.server.port=8080
+      - traefik.http.routers.open-webui-http.rule=Host(`manus.designflow.app`)
+      - traefik.http.routers.open-webui-http.entrypoints=http
+      - traefik.http.routers.open-webui-http.middlewares=redirect-to-https
+      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
 volumes:
   open-webui-data: null

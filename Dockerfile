@@ -7,7 +7,7 @@ COPY config.toml ./config/config.toml
 COPY entrypoint.sh ./entrypoint.sh
 COPY server.py ./server.py
 RUN chmod +x ./entrypoint.sh
-RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir structlog "daytona-sdk"
+RUN sed -i 's/pillow~=11.1.0/pillow/' requirements.txt && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir structlog "daytona-sdk" fastapi "uvicorn[standard]"
 # Shim: daytona-sdk installs as 'daytona_sdk' module but code imports 'from daytona import ...'
 RUN mkdir -p /usr/local/lib/python3.11/site-packages/daytona && \
     echo 'from daytona_sdk import *' > /usr/local/lib/python3.11/site-packages/daytona/__init__.py && \

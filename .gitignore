@@ -1,2 +1,17 @@
 .env
 .env.*
+# Local scripts with secrets - never commit
+set_github_secrets.py
+encrypt_secret.py
+encrypt_webhook.py
+# Scratch/debug files
+toArray()
+toArray())
+value.PHP_EOL
+# Log archives
+*.zip
+job_logs.txt
+jobs.json
+job_logs/
+logs3/
+logs4/

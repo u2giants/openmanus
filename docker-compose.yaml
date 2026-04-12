@@ -4,6 +4,8 @@ services:
     image: 'ghcr.io/u2giants/openmanus:main'
     restart: unless-stopped
     entrypoint: ["./entrypoint.sh"]
+    volumes:
+      - /mnt/tailscale/souls:/app/custom_souls
     environment:
       - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
       - 'DAYTONA_API_KEY=${DAYTONA_API_KEY}'
@@ -19,6 +21,13 @@ services:
       - 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}'
       - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
       - ENABLE_TERMINAL=true
+      - ENABLE_OAUTH_SIGNUP=true
+      - OAUTH_PROVIDER_NAME=Google
+      - 'GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}'
+      - 'GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}'
+      - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+      - WEBUI_URL=https://manus.designflow.app
+      - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
     ports:
       - '3000:8080'
     depends_on:

@@ -2,6 +2,12 @@
 
 ## Status: COMPLETE ✅
 
+### Post-Deploy Review Update
+
+- Browser automation implementation review is in progress.
+- Reviewing [`novnc-startup.sh`](novnc-startup.sh), [`config.toml`](config.toml), [`Dockerfile`](Dockerfile), [`entrypoint.sh`](entrypoint.sh), and [`docker-compose.yaml`](docker-compose.yaml).
+- Git push will only happen after review passes.
+
 **Live URL: https://manus.designflow.app**
 **noVNC Desktop: https://vnc.designflow.app**
 **Google SSO: Enabled (Continue with Google)**

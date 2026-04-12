@@ -8,6 +8,9 @@ encrypt_webhook.py
 toArray()
 toArray())
 value.PHP_EOL
+response.html
+app_bundle.js
+*.debug.*
 # Log archives
 *.zip
 job_logs.txt

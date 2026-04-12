@@ -45,5 +45,27 @@ services:
       - traefik.http.routers.open-webui-http.entrypoints=http
       - traefik.http.routers.open-webui-http.middlewares=redirect-to-https
       - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+  novnc:
+    image: lscr.io/linuxserver/webtop:ubuntu-mate
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - SUBFOLDER=/
+    volumes:
+      - novnc-data:/config
+    shm_size: '1gb'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.novnc.rule=Host(`vnc.designflow.app`)
+      - traefik.http.routers.novnc.entrypoints=https
+      - traefik.http.routers.novnc.tls=true
+      - traefik.http.routers.novnc.tls.certresolver=letsencrypt
+      - traefik.http.services.novnc.loadbalancer.server.port=3000
+      - traefik.http.routers.novnc-http.rule=Host(`vnc.designflow.app`)
+      - traefik.http.routers.novnc-http.entrypoints=http
+      - traefik.http.routers.novnc-http.middlewares=redirect-to-https
 volumes:
   open-webui-data: null
+  novnc-data: null

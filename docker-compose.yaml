@@ -59,6 +59,7 @@ services:
     volumes:
       - novnc-data:/config
       - ./novnc-startup.sh:/custom-cont-init.d/99-start-chromium.sh:ro
+      - ./cdp_proxy.py:/custom-cont-init.d/cdp_proxy.py:ro
     shm_size: '1gb'
     expose:
       - "9222"

@@ -3,7 +3,7 @@
 sleep 10
 
 # Launch Chromium. Newer Chrome always binds CDP to 127.0.0.1 regardless of
-# --remote-debugging-address, so we proxy it out on port 9223 below.
+# --remote-debugging-address. cdp_proxy.py exposes it externally on ports 9223/9224.
 su -c 'DISPLAY=:1 chromium-browser \
   --no-first-run \
   --no-default-browser-check \
@@ -23,40 +23,7 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-# Python proxy: listens on 0.0.0.0:9223, rewrites Host header to localhost:9222
-# so Chrome's host-check security doesn't reject cross-container connections.
-echo "Starting CDP proxy on 0.0.0.0:9223..."
-python3 - << 'PYEOF' &
-import socket, threading, re
-
-def handle(client):
-    server = socket.socket()
-    server.connect(('127.0.0.1', 9222))
-    def fwd(src, dst, rewrite_host=False):
-        try:
-            while True:
-                data = src.recv(4096)
-                if not data:
-                    break
-                if rewrite_host and b'Host:' in data:
-                    data = re.sub(rb'Host: [^\r\n]+', b'Host: localhost:9222', data)
-                dst.sendall(data)
-        except:
-            pass
-        finally:
-            try: src.close()
-            except: pass
-            try: dst.close()
-            except: pass
-    threading.Thread(target=fwd, args=(client, server, True), daemon=True).start()
-    fwd(server, client)
-
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('0.0.0.0', 9223))
-s.listen(50)
-while True:
-    c, _ = s.accept()
-    threading.Thread(target=handle, args=(c,), daemon=True).start()
-PYEOF
-echo "CDP proxy running on port 9223"
+# Start CDP proxy (HTTP:9223 for JSON discovery, WS:9224 for WebSocket tunnel)
+echo "Starting CDP proxy..."
+python3 /custom-cont-init.d/cdp_proxy.py &
+echo "CDP proxy running"

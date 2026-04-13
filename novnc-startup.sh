@@ -2,8 +2,20 @@
 # Wait for desktop environment to be fully ready
 sleep 10
 
-# Launch Chromium. Newer Chrome always binds CDP to 127.0.0.1 regardless of
-# --remote-debugging-address. cdp_proxy.py exposes it externally on ports 9223/9224.
+# Add Chromium to MATE autostart so it opens every time the desktop session starts
+mkdir -p /config/.config/autostart
+cat > /config/.config/autostart/chromium.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Chromium
+Exec=chromium-browser --no-first-run --no-default-browser-check --disable-gpu --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
+Hidden=false
+NoDisplay=false
+X-MATE-Autostart-enabled=true
+EOF
+
+# Launch Chromium now (for the current session).
+# Newer Chrome always binds CDP to 127.0.0.1; cdp_proxy.py exposes it on 9223/9224.
 su -c 'DISPLAY=:1 chromium-browser \
   --no-first-run \
   --no-default-browser-check \

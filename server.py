@@ -132,7 +132,7 @@ async def chat_completions(request: Request):
                 prior_messages.append(Message.system_message(content))
 
         agent = await Manus.create()
-        agent.max_steps = 100
+        agent.max_steps = 2000
         if prior_messages:
             agent.messages = prior_messages
 

@@ -8,7 +8,7 @@ cat > /config/.config/autostart/chromium.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Chromium
-Exec=/usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --disable-features=NetworkService --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
+Exec=/usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
 Hidden=false
 NoDisplay=false
 X-MATE-Autostart-enabled=true
@@ -21,7 +21,6 @@ su -c 'DISPLAY=:1 /usr/lib/chromium/chromium \
   --disable-gpu \
   --no-sandbox \
   --disable-dev-shm-usage \
-  --disable-features=NetworkService \
   --remote-debugging-port=9222 \
   --remote-allow-origins=* \
   --user-data-dir=/config/chromium-profile \

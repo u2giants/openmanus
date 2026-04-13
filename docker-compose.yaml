@@ -31,6 +31,7 @@ services:
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
       - WEBUI_URL=https://manus.designflow.app
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
+      - 'WEBUI_BANNERS=[{"id":"tool-manager","type":"info","title":"","content":"[Open Tool Manager](/admin/tools) — Create and edit OpenManus Python tools","dismissible":true,"timestamp":1713010000}]'
     ports:
       - '3000:8080'
     depends_on:

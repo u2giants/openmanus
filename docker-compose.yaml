@@ -16,6 +16,13 @@ services:
       - user-tools-data:/app/user_tools
     depends_on:
       - novnc
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.tool-manager.rule=Host(`manus.designflow.app`) && PathPrefix(`/admin/tools`,`/api/tools`)
+      - traefik.http.routers.tool-manager.entrypoints=https
+      - traefik.http.routers.tool-manager.tls=true
+      - traefik.http.routers.tool-manager.tls.certresolver=letsencrypt
+      - traefik.http.services.tool-manager.loadbalancer.server.port=8000
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'
     restart: unless-stopped

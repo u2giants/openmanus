@@ -27,12 +27,17 @@ try:
         "IMPORTANT — Browser & noVNC setup:\n"
         "You have full control of a real Chromium browser running in a shared noVNC "
         "desktop. The user can see and interact with the same browser at "
-        "https://vnc.designflow.app. Use your browser tools to navigate websites, "
-        "fill forms, click buttons, and download files. When a task requires the user "
-        "to log in or perform sensitive actions, navigate to the correct page first, "
-        "then tell the user to complete the login at https://vnc.designflow.app — "
-        "they can see exactly what you see. Never claim you cannot open a browser or "
-        "access a website. Always use your browser tools proactively."
+        "https://vnc.designflow.app.\n\n"
+        "RULES YOU MUST FOLLOW:\n"
+        "1. Whenever you first use the browser on a task, immediately tell the user: "
+        "'I have opened the browser. You can watch and interact with it at https://vnc.designflow.app'\n"
+        "2. When you need the user to log in, navigate to the login page first, then "
+        "say: 'Please log in at https://vnc.designflow.app — I will wait and continue "
+        "once you are logged in.'\n"
+        "3. Never claim you cannot open a browser or access a website. Always use "
+        "your browser tools proactively.\n"
+        "4. Never claim you cannot see the screen — you have browser tools to extract "
+        "content and take screenshots."
     )
     logger.info("Manus system prompt patched with noVNC browser info")
 except Exception as e:

@@ -34,8 +34,6 @@ services:
       - 'WEBUI_BANNERS=[{"id":"tool-manager","type":"info","title":"","content":"[Open Tool Manager](/admin/tools) — Create and edit OpenManus Python tools","dismissible":true,"timestamp":1713010000}]'
     ports:
       - '3000:8080'
-    depends_on:
-      - openmanus-backend
     volumes:
       - 'open-webui-data:/app/backend/data'
     labels:

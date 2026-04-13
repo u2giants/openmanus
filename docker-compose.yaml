@@ -12,6 +12,8 @@ services:
       - 'BROWSER_CDP_URL=http://novnc:9223'
     ports:
       - '8001:8000'
+    volumes:
+      - user-tools-data:/app/user_tools
     depends_on:
       - novnc
   open-webui:
@@ -76,3 +78,4 @@ services:
 volumes:
   open-webui-data: null
   novnc-data: null
+  user-tools-data: null

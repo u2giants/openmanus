@@ -166,6 +166,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     .btn-save:hover { background: #94e2d5; }
     .btn-delete { background: #f38ba8; color: #1e1e2e; }
     .btn-delete:hover { background: #eba0ac; }
+    .btn-upload { background: #cba6f7; color: #1e1e2e; }
+    .btn-upload:hover { background: #b4befe; }
     .btn:disabled { opacity: 0.4; cursor: default; }
     .cm-editor-wrap { flex: 1; overflow: hidden; }
     .CodeMirror { height: 100%; font-size: 13px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
@@ -190,6 +192,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
       <div class="editor-toolbar">
         <input class="tool-name-input" id="toolName" placeholder="filename (no .py)" spellcheck="false" />
         <button class="btn btn-save" onclick="saveTool()">Save</button>
+        <button class="btn btn-upload" onclick="document.getElementById('fileUpload').click()">Upload .py</button>
+        <input type="file" id="fileUpload" accept=".py" style="display:none" onchange="uploadFile(event)" />
         <button class="btn btn-delete" id="deleteBtn" onclick="deleteTool()" disabled>Delete</button>
       </div>
       <div class="cm-editor-wrap" id="cmWrap">
@@ -275,6 +279,22 @@ class MyCustomTool(BaseTool):
       document.querySelectorAll('.tool-item').forEach(el => el.classList.remove('active'));
       setStatus('New tool — set a filename and save.', '');
       document.getElementById('toolName').focus();
+    }
+
+    function uploadFile(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        const name = file.name.replace(/\\.py$/, '');
+        document.getElementById('toolName').value = name;
+        cm.setValue(e.target.result);
+        document.getElementById('deleteBtn').disabled = true;
+        document.querySelectorAll('.tool-item').forEach(el => el.classList.remove('active'));
+        setStatus('Loaded from file: ' + file.name + ' — click Save to store it.', 'ok');
+      };
+      reader.readAsText(file);
+      event.target.value = '';
     }
 
     async function saveTool() {

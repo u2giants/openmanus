@@ -129,6 +129,190 @@ def load_user_tools() -> list:
 
 
 # ---------------------------------------------------------------------------
+# OpenWebUI function: "Save to Knowledge" action
+# Served at /admin/functions/save_to_knowledge.py so users can copy-paste it
+# into OpenWebUI Admin → Functions.
+# ---------------------------------------------------------------------------
+
+SAVE_TO_KNOWLEDGE_FUNCTION = '''"""
+OpenWebUI Action Function: Save to Knowledge
+============================================
+Install via OpenWebUI Admin → Functions → + (New Function).
+Paste the entire contents of this file.
+
+When a user clicks the "Save to Knowledge" button that appears on AI messages,
+this action:
+  1. Takes the current conversation history.
+  2. Calls the chat API asking the AI to write a structured knowledge piece
+     summarizing what it just did / explained.
+  3. Saves the result as a file in the "OpenManus Knowledge" collection
+     (created automatically on first use).
+
+Valves (Admin → Functions → gear icon):
+  - knowledge_collection_name: Name of the Knowledge collection (default: "OpenManus Knowledge")
+  - base_url: Internal OpenWebUI URL for API calls (default: "http://localhost:8080")
+  - max_context_messages: How many recent messages to include (default: 10)
+"""
+
+import time
+import httpx
+from pydantic import BaseModel, Field
+
+
+class Action:
+
+    class Valves(BaseModel):
+        knowledge_collection_name: str = Field(
+            default="OpenManus Knowledge",
+            description="Name of the Knowledge collection to save pieces into. Created automatically if it doesn't exist.",
+        )
+        base_url: str = Field(
+            default="http://localhost:8080",
+            description="Internal base URL of the OpenWebUI instance (used for API calls).",
+        )
+        max_context_messages: int = Field(
+            default=10,
+            description="Number of recent messages to include when asking the AI to write the knowledge piece.",
+        )
+
+    def __init__(self):
+        self.valves = self.Valves()
+
+    def _auth_headers(self, token: str) -> dict:
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    def _get_or_create_knowledge(self, base_url: str, headers: dict, name: str):
+        try:
+            r = httpx.get(f"{base_url}/api/v1/knowledge/", headers=headers, timeout=10)
+            r.raise_for_status()
+            for col in r.json():
+                if col.get("name") == name:
+                    return col["id"]
+            r2 = httpx.post(
+                f"{base_url}/api/v1/knowledge/create",
+                headers=headers,
+                json={"name": name, "description": "Automatically saved knowledge pieces from OpenManus chats."},
+                timeout=10,
+            )
+            r2.raise_for_status()
+            return r2.json()["id"]
+        except Exception:
+            return None
+
+    def _save_text_to_knowledge(self, base_url: str, headers: dict, knowledge_id: str, filename: str, content: str) -> bool:
+        try:
+            upload_headers = {k: v for k, v in headers.items() if k != "Content-Type"}
+            r = httpx.post(
+                f"{base_url}/api/v1/files/",
+                headers=upload_headers,
+                files={"file": (filename, content.encode("utf-8"), "text/plain")},
+                timeout=30,
+            )
+            r.raise_for_status()
+            file_id = r.json()["id"]
+            r2 = httpx.post(
+                f"{base_url}/api/v1/files/{file_id}/data/content/update",
+                headers=headers,
+                json={"content": content},
+                timeout=30,
+            )
+            r2.raise_for_status()
+            r3 = httpx.post(
+                f"{base_url}/api/v1/knowledge/{knowledge_id}/file/add",
+                headers=headers,
+                json={"file_id": file_id},
+                timeout=30,
+            )
+            r3.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    def _generate_knowledge_text(self, base_url: str, headers: dict, model: str, conversation: list) -> str:
+        system_message = {
+            "role": "system",
+            "content": (
+                "You are a knowledge base curator. Read the provided conversation and write "
+                "a concise, well-structured knowledge piece capturing the key information, "
+                "steps, decisions, or insights. Use this format:\\n\\n"
+                "# [Descriptive Title]\\n\\n"
+                "**Summary:** One or two sentences describing what this covers.\\n\\n"
+                "## Key Points\\n"
+                "- ...\\n\\n"
+                "## Details\\n"
+                "(Include important steps, commands, code snippets, or decisions.)\\n\\n"
+                "Be specific and factual. Output only the knowledge piece — no preamble."
+            ),
+        }
+        messages = [system_message] + conversation + [
+            {"role": "user", "content": "Write the knowledge piece now."}
+        ]
+        try:
+            r = httpx.post(
+                f"{base_url}/api/chat/completions",
+                headers=headers,
+                json={"model": model, "messages": messages, "stream": False},
+                timeout=120,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            return ""
+
+    async def action(self, body: dict, __user__: dict = None, __event_emitter__=None, __event_call__=None) -> None:
+        async def emit(description: str, done: bool = False):
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": description, "done": done}})
+
+        user_token = (__user__ or {}).get("token") or (__user__ or {}).get("id", "")
+        model = body.get("model", "")
+        all_messages = body.get("messages", [])
+
+        n = self.valves.max_context_messages
+        recent = all_messages[-n:] if len(all_messages) > n else all_messages
+        clean = [
+            {"role": m["role"], "content": m.get("content") or ""}
+            for m in recent
+            if m.get("role") in ("user", "assistant")
+        ]
+
+        if not clean:
+            await emit("No conversation found to summarize.", done=True)
+            return
+
+        base_url = self.valves.base_url
+        headers = self._auth_headers(user_token)
+
+        await emit("Writing knowledge piece…")
+        text = self._generate_knowledge_text(base_url, headers, model, clean)
+
+        if not text or not text.strip():
+            await emit("AI returned an empty response. Nothing saved.", done=True)
+            return
+
+        await emit("Saving to Knowledge base…")
+        collection_name = self.valves.knowledge_collection_name
+        knowledge_id = self._get_or_create_knowledge(base_url, headers, collection_name)
+
+        if not knowledge_id:
+            await emit(f"Could not access knowledge collection '{collection_name}'. Check base_url valve.", done=True)
+            return
+
+        first_line = text.strip().splitlines()[0].lstrip("#").strip()[:60]
+        safe_name = "".join(c if c.isalnum() or c in " _-" else "_" for c in first_line).strip()
+        filename = f"{time.strftime(\'%Y%m%d_%H%M%S\')}_{safe_name or \'knowledge\'}.txt"
+
+        ok = self._save_text_to_knowledge(base_url, headers, knowledge_id, filename, text)
+
+        if ok:
+            await emit(f"Saved to \'{collection_name}\' → \'{filename}\'", done=True)
+            if __event_emitter__:
+                await __event_emitter__({"type": "notification", "data": {"type": "success", "content": f"Saved to \'{collection_name}\'"}})
+        else:
+            await emit("Upload failed. Check that Knowledge API is enabled and base_url is correct.", done=True)
+'''
+
+# ---------------------------------------------------------------------------
 # Tool Manager UI — served at /admin/tools
 # ---------------------------------------------------------------------------
 
@@ -149,6 +333,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     header h1 { font-size: 15px; font-weight: 600; }
     header span { color: #a6adc8; font-size: 12px; }
     .auto-note { margin-left: auto; font-size: 11px; background: #313244; border-radius: 4px; padding: 3px 8px; color: #a6e3a1; }
+    .fn-link { font-size: 11px; background: #45475a; border-radius: 4px; padding: 3px 8px; color: #cba6f7; text-decoration: none; white-space: nowrap; }
+    .fn-link:hover { background: #585b70; }
     .main { display: flex; flex: 1; overflow: hidden; }
     .sidebar { width: 200px; background: #181825; border-right: 1px solid #313244; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-header { padding: 8px; border-bottom: 1px solid #313244; }
@@ -187,6 +373,7 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     <h1>OpenManus Tool Manager</h1>
     <span>Write or upload a <code>.py</code> file — saved tools are injected into every chat automatically.</span>
     <span class="auto-note">✓ auto-loaded in every chat</span>
+    <a class="fn-link" href="/admin/functions/save_to_knowledge.py" target="_blank" title="Download and paste into OpenWebUI Admin → Functions to add a Save-to-Knowledge button on AI messages">⬇ Save-to-Knowledge function</a>
   </header>
   <div class="main">
     <div class="sidebar">
@@ -383,6 +570,14 @@ class MyCustomTool(BaseTool):
 @app.get("/admin/tools", response_class=HTMLResponse)
 async def tool_manager_ui():
     return TOOL_MANAGER_HTML
+
+
+from fastapi.responses import PlainTextResponse
+
+@app.get("/admin/functions/save_to_knowledge.py", response_class=PlainTextResponse)
+async def get_save_to_knowledge_function():
+    """Serve the Save-to-Knowledge OpenWebUI action function source."""
+    return PlainTextResponse(SAVE_TO_KNOWLEDGE_FUNCTION, media_type="text/x-python")
 
 
 @app.get("/api/tools")

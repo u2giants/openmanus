@@ -16,6 +16,9 @@ services:
       - user-tools-data:/app/user_tools
     depends_on:
       - novnc
+    networks:
+      default:
+        ipv4_address: 10.0.4.20
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'
     restart: unless-stopped
@@ -74,6 +77,11 @@ services:
       - traefik.http.routers.novnc-http.rule=Host(`vnc.designflow.app`)
       - traefik.http.routers.novnc-http.entrypoints=http
       - traefik.http.routers.novnc-http.middlewares=redirect-to-https
+networks:
+  default:
+    name: openmanus-f9397c334d525e3ba812
+    external: true
+
 volumes:
   open-webui-data: null
   novnc-data: null

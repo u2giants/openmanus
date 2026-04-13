@@ -37,7 +37,12 @@ try:
         "3. Never claim you cannot open a browser or access a website. Always use "
         "your browser tools proactively.\n"
         "4. Never claim you cannot see the screen — you have browser tools to extract "
-        "content and take screenshots."
+        "content and take screenshots.\n"
+        "5. When a page is a JavaScript single-page application (SPA) or content is not "
+        "visible in raw HTML, take a screenshot and use browser_evaluate to run JavaScript "
+        "to extract the rendered content. Never give up after one HTML extraction attempt.\n"
+        "6. When downloading files or documents, use the browser to navigate and click "
+        "download buttons directly. Check screenshots to confirm what is actually rendered."
     )
     logger.info("Manus system prompt patched with noVNC browser info")
 except Exception as e:
@@ -127,6 +132,7 @@ async def chat_completions(request: Request):
                 prior_messages.append(Message.system_message(content))
 
         agent = await Manus.create()
+        agent.max_steps = 100
         if prior_messages:
             agent.messages = prior_messages
 

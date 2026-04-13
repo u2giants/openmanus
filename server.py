@@ -15,6 +15,29 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="OpenManus API")
 
+# Patch the Manus system prompt at import time so the agent knows about the
+# shared noVNC browser environment the user can see at vnc.designflow.app
+try:
+    import app.prompt.manus as manus_prompt
+    manus_prompt.SYSTEM_PROMPT = (
+        "You are OpenManus, an all-capable AI assistant, aimed at solving any task "
+        "presented by the user. You have various tools at your disposal that you can "
+        "call upon to efficiently complete complex requests.\n"
+        "The initial directory is: {directory}\n\n"
+        "IMPORTANT — Browser & noVNC setup:\n"
+        "You have full control of a real Chromium browser running in a shared noVNC "
+        "desktop. The user can see and interact with the same browser at "
+        "https://vnc.designflow.app. Use your browser tools to navigate websites, "
+        "fill forms, click buttons, and download files. When a task requires the user "
+        "to log in or perform sensitive actions, navigate to the correct page first, "
+        "then tell the user to complete the login at https://vnc.designflow.app — "
+        "they can see exactly what you see. Never claim you cannot open a browser or "
+        "access a website. Always use your browser tools proactively."
+    )
+    logger.info("Manus system prompt patched with noVNC browser info")
+except Exception as e:
+    logger.warning(f"Could not patch Manus system prompt: {e}")
+
 
 @app.get("/health")
 async def health():
@@ -59,7 +82,6 @@ async def chat_completions(request: Request):
         requested_temperature = body.get("temperature")
         requested_max_tokens = body.get("max_tokens")
 
-        # Extract the last user message as the prompt
         prompt = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "",
@@ -76,12 +98,10 @@ async def chat_completions(request: Request):
             f"max_tokens={requested_max_tokens} | prompt={prompt[:100]}..."
         )
 
-        # Import here to avoid import errors crashing the server at startup
         from app.agent.manus import Manus
         from app.llm import LLM
         from app.schema import Message
 
-        # Override LLM singleton fields from request parameters
         llm = LLM()
         if requested_model and requested_model not in ("manus", "openmanus"):
             llm.model = requested_model
@@ -90,9 +110,7 @@ async def chat_completions(request: Request):
         if requested_max_tokens is not None:
             llm.max_tokens = int(requested_max_tokens)
 
-        # Build conversation history to inject (all messages except the last user one)
         prior_messages = []
-        # All messages except the last (which is `prompt` and passed to agent.run())
         for msg in messages[:-1]:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
@@ -123,7 +141,6 @@ async def chat_completions(request: Request):
         created = int(time.time())
         model_id = requested_model or "manus"
 
-        # Count tokens using the LLM's tokenizer when available
         try:
             prompt_tokens = llm.count_tokens(" ".join(m.get("content", "") or "" for m in messages))
             completion_tokens = llm.count_tokens(answer or "")
@@ -132,9 +149,7 @@ async def chat_completions(request: Request):
             completion_tokens = len(answer.split()) if answer else 0
 
         if stream:
-            # Stream the response as SSE so Open WebUI doesn't hang
             async def event_stream():
-                # First chunk: role
                 chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
@@ -144,7 +159,6 @@ async def chat_completions(request: Request):
                 }
                 yield f"data: {json.dumps(chunk)}\n\n"
 
-                # Content chunk
                 chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
@@ -154,7 +168,6 @@ async def chat_completions(request: Request):
                 }
                 yield f"data: {json.dumps(chunk)}\n\n"
 
-                # Final chunk
                 chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",

@@ -8,7 +8,7 @@ cat > /config/.config/autostart/chromium.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Chromium
-Exec=chromium-browser --no-first-run --no-default-browser-check --disable-gpu --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
+Exec=/usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
 Hidden=false
 NoDisplay=false
 X-MATE-Autostart-enabled=true
@@ -16,7 +16,7 @@ EOF
 
 # Launch Chromium now (for the current session).
 # Newer Chrome always binds CDP to 127.0.0.1; cdp_proxy.py exposes it on 9223/9224.
-su -c 'DISPLAY=:1 chromium-browser \
+su -c 'DISPLAY=:1 /usr/lib/chromium/chromium \
   --no-first-run \
   --no-default-browser-check \
   --disable-gpu \

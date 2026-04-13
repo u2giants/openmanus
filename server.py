@@ -148,15 +148,21 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     header { padding: 10px 16px; background: #181825; border-bottom: 1px solid #313244; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
     header h1 { font-size: 15px; font-weight: 600; }
     header span { color: #a6adc8; font-size: 12px; }
+    .auto-note { margin-left: auto; font-size: 11px; background: #313244; border-radius: 4px; padding: 3px 8px; color: #a6e3a1; }
     .main { display: flex; flex: 1; overflow: hidden; }
     .sidebar { width: 200px; background: #181825; border-right: 1px solid #313244; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-header { padding: 8px; border-bottom: 1px solid #313244; }
     .new-btn { width: 100%; padding: 6px; background: #89b4fa; color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px; }
     .new-btn:hover { background: #74c7ec; }
     .tool-list { flex: 1; overflow-y: auto; }
-    .tool-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #313244; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #313244; font-size: 13px; }
     .tool-item:hover { background: #313244; }
-    .tool-item.active { background: #45475a; color: #89b4fa; }
+    .tool-item.active { background: #45475a; }
+    .tool-item-filename { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-item.active .tool-item-filename { color: #89b4fa; }
+    .tool-item-meta { font-size: 11px; color: #a6adc8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-item-meta.ok { color: #a6e3a1; }
+    .tool-item-meta.err { color: #f38ba8; }
     .editor-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     .editor-toolbar { padding: 7px 10px; background: #181825; border-bottom: 1px solid #313244; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
     .tool-name-input { padding: 5px 8px; background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 13px; width: 180px; outline: none; }
@@ -179,7 +185,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
 <body>
   <header>
     <h1>OpenManus Tool Manager</h1>
-    <span>Tools saved here are injected into every agent run automatically — no restart needed.</span>
+    <span>Write or upload a <code>.py</code> file — saved tools are injected into every chat automatically.</span>
+    <span class="auto-note">✓ auto-loaded in every chat</span>
   </header>
   <div class="main">
     <div class="sidebar">
@@ -246,16 +253,34 @@ class MyCustomTool(BaseTool):
     setTimeout(resizeCM, 50);
 
     async function loadTools() {
-      const r = await fetch('/api/tools');
-      const tools = await r.json();
+      const r = await fetch('/api/tools/status');
+      const statuses = await r.json();
       const list = document.getElementById('toolList');
       const active = document.getElementById('toolName').value;
       list.innerHTML = '';
-      tools.forEach(t => {
+      statuses.forEach(s => {
         const div = document.createElement('div');
-        div.className = 'tool-item' + (t === active ? ' active' : '');
-        div.textContent = t;
-        div.onclick = () => openTool(t);
+        div.className = 'tool-item' + (s.file === active ? ' active' : '');
+        div.onclick = () => openTool(s.file);
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'tool-item-filename';
+        nameEl.textContent = s.file + '.py';
+        div.appendChild(nameEl);
+
+        const metaEl = document.createElement('div');
+        if (s.error) {
+          metaEl.className = 'tool-item-meta err';
+          metaEl.textContent = '✗ ' + s.error.split('\n').pop();
+        } else if (s.tools.length > 0) {
+          metaEl.className = 'tool-item-meta ok';
+          metaEl.textContent = '✓ ' + s.tools.map(t => t.name).join(', ');
+          div.title = s.tools.map(t => t.name + ': ' + t.description).join('\n');
+        } else {
+          metaEl.className = 'tool-item-meta';
+          metaEl.textContent = 'no BaseTool found';
+        }
+        div.appendChild(metaEl);
         list.appendChild(div);
       });
     }
@@ -365,6 +390,47 @@ async def list_tools():
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     names = sorted(p.stem for p in USER_TOOLS_DIR.glob("*.py") if not p.name.startswith("_"))
     return names
+
+
+@app.get("/api/tools/status")
+async def tools_status():
+    """Load every user tool and return its name, description, and any import error."""
+    USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    results = []
+    try:
+        from app.tool.base import BaseTool
+        base_available = True
+    except Exception:
+        base_available = False
+
+    for py_file in sorted(USER_TOOLS_DIR.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+        entry = {"file": py_file.stem, "tools": [], "error": None}
+        if not base_available:
+            entry["error"] = "OpenManus BaseTool not importable (check container)"
+            results.append(entry)
+            continue
+        module_name = f"_user_tools_status.{py_file.stem}"
+        sys.modules.pop(module_name, None)
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, py_file)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = mod
+            spec.loader.exec_module(mod)
+            for attr_name in dir(mod):
+                obj = getattr(mod, attr_name)
+                if (isinstance(obj, type) and issubclass(obj, BaseTool)
+                        and obj is not BaseTool and obj.__module__ == module_name):
+                    instance = obj()
+                    entry["tools"].append({
+                        "name": getattr(instance, "name", attr_name),
+                        "description": getattr(instance, "description", ""),
+                    })
+        except Exception as e:
+            entry["error"] = str(e)
+        results.append(entry)
+    return results
 
 
 @app.get("/api/tools/{name}")

@@ -3,7 +3,7 @@
 
 [llm]
 model = "openai/gpt-4o"
-base_url = "https://openrouter.ai/api/v1"
+base_url = "__OPENAI_API_BASE_URL__"
 api_key = "__OPENAI_API_KEY__"
 max_tokens = 4096
 temperature = 0.0

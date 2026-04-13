@@ -4,8 +4,6 @@ services:
     image: 'ghcr.io/u2giants/openmanus:main'
     restart: unless-stopped
     entrypoint: ["./entrypoint.sh"]
-    volumes:
-      - /mnt/tailscale/souls:/app/custom_souls
     environment:
       - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
       - 'DAYTONA_API_KEY=${DAYTONA_API_KEY}'

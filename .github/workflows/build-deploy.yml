@@ -18,14 +18,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
-      
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -34,7 +34,7 @@ jobs:
           tags: |
             type=raw,value=main
             type=sha,prefix=sha-
-      
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -42,20 +42,14 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      
-      - name: Trigger Coolify deployment
-        run: |
-          if [ -n "${{ secrets.COOLIFY_WEBHOOK_URL }}" ] && [ -n "${{ secrets.COOLIFY_API_TOKEN }}" ]; then
-            HTTP_CODE=$(curl -sk -o /tmp/coolify_resp.txt -w "%{http_code}" \
-              -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
-            cat /tmp/coolify_resp.txt
-            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-              echo "Coolify deploy triggered (HTTP $HTTP_CODE)"
-            else
-              echo "WARNING: Coolify webhook returned HTTP $HTTP_CODE — image pushed successfully, redeploy manually if needed."
-            fi
-          else
-            echo "COOLIFY_WEBHOOK_URL or COOLIFY_API_TOKEN not set, skipping deployment notification"
-          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            docker pull ghcr.io/u2giants/openmanus:main
+            docker restart openmanus-backend-e10kwzww46ljhrgz1qj08j6a
+            echo "Deploy complete: openmanus-backend restarted with new image"

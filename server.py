@@ -129,6 +129,201 @@ def load_user_tools() -> list:
 
 
 # ---------------------------------------------------------------------------
+# OpenWebUI function: "Run Tool" action
+# Served at /admin/functions/run_tool.py
+# ---------------------------------------------------------------------------
+
+RUN_TOOL_FUNCTION = '''"""
+OpenWebUI Action Function: Run Tool
+=====================================
+Install via OpenWebUI Admin → Functions → + (New Function).
+Paste this entire file.
+
+Adds a "Run Tool" button to AI messages. When clicked:
+  1. Fetches your valid tools from the OpenManus backend.
+  2. Shows a numbered picker dialog — type the number or tool name.
+  3. Shows a parameters dialog pre-filled with the tool\'s JSON schema.
+  4. Calls the tool directly and posts output back into the chat.
+
+Valve:
+  - backend_url: internal URL of the OpenManus backend
+                 (default: "http://openmanus-backend:8000")
+"""
+
+import json
+import httpx
+from pydantic import BaseModel, Field
+
+
+class Action:
+
+    class Valves(BaseModel):
+        backend_url: str = Field(
+            default="http://openmanus-backend:8000",
+            description="Internal URL of the OpenManus backend (used for tool list and invocation).",
+        )
+
+    def __init__(self):
+        self.valves = self.Valves()
+
+    def _get_valid_tools(self, backend_url: str) -> list:
+        """Return a flat list of {file, name, description, parameters} for every valid tool."""
+        try:
+            r = httpx.get(f"{backend_url}/api/tools/status", timeout=10)
+            r.raise_for_status()
+            results = []
+            for entry in r.json():
+                if not entry.get("error") and entry.get("tools"):
+                    for t in entry["tools"]:
+                        results.append({
+                            "file": entry["file"],
+                            "name": t["name"],
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {}),
+                        })
+            return results
+        except Exception:
+            return []
+
+    def _schema_to_sample(self, schema: dict) -> str:
+        """Build a sample JSON object from a JSON Schema parameters dict."""
+        if not schema or schema.get("type") != "object" or not schema.get("properties"):
+            return "{}"
+        sample = {}
+        for key, prop in schema["properties"].items():
+            t = prop.get("type", "string")
+            if t == "string":             sample[key] = ""
+            elif t in ("number","integer"): sample[key] = 0
+            elif t == "boolean":          sample[key] = False
+            elif t == "array":            sample[key] = []
+            else:                         sample[key] = None
+        return json.dumps(sample, indent=2)
+
+    async def action(
+        self,
+        body: dict,
+        __user__: dict = None,
+        __event_emitter__=None,
+        __event_call__=None,
+    ) -> None:
+
+        async def emit(description: str, done: bool = False):
+            if __event_emitter__:
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": description, "done": done}}
+                )
+
+        if not __event_call__:
+            await emit("__event_call__ not available in this OpenWebUI version.", done=True)
+            return
+
+        # ------------------------------------------------------------------ #
+        # 1. Fetch tool list                                                  #
+        # ------------------------------------------------------------------ #
+        await emit("Loading tools…")
+        backend_url = self.valves.backend_url
+        tools = self._get_valid_tools(backend_url)
+
+        if not tools:
+            await emit("No valid tools found. Check the Tool Manager.", done=True)
+            return
+
+        # ------------------------------------------------------------------ #
+        # 2. Show picker                                                       #
+        # ------------------------------------------------------------------ #
+        tool_list_text = "\\n".join(
+            f"{i + 1}. {t[\'name\']} — {t[\'description\'][:80]}"
+            for i, t in enumerate(tools)
+        )
+
+        pick_response = await __event_call__({
+            "type": "input",
+            "data": {
+                "title": "Run Tool",
+                "message": f"Available tools:\\n\\n{tool_list_text}\\n\\nEnter number or name:",
+                "placeholder": "1",
+            },
+        })
+
+        pick = str(pick_response or "").strip()
+        if not pick:
+            await emit("Cancelled.", done=True)
+            return
+
+        # Resolve by number or name
+        selected = None
+        if pick.isdigit():
+            idx = int(pick) - 1
+            if 0 <= idx < len(tools):
+                selected = tools[idx]
+        else:
+            for t in tools:
+                if t["name"] == pick:
+                    selected = t
+                    break
+
+        if not selected:
+            await emit(f"Tool \'{pick}\' not found. Enter the number shown in the list.", done=True)
+            return
+
+        # ------------------------------------------------------------------ #
+        # 3. Parameters dialog                                                 #
+        # ------------------------------------------------------------------ #
+        sample = self._schema_to_sample(selected["parameters"])
+
+        params_response = await __event_call__({
+            "type": "input",
+            "data": {
+                "title": f"Parameters — {selected[\'name\']}",
+                "message": f"{selected[\'description\']}\\n\\nEdit the JSON parameters below:",
+                "placeholder": sample,
+                "value": sample,
+            },
+        })
+
+        params_raw = str(params_response or "{}").strip() or "{}"
+        try:
+            params = json.loads(params_raw)
+        except json.JSONDecodeError as e:
+            await emit(f"Invalid JSON: {e}", done=True)
+            return
+
+        # ------------------------------------------------------------------ #
+        # 4. Invoke                                                            #
+        # ------------------------------------------------------------------ #
+        await emit(f"Running \'{selected[\'name\']}\'…")
+        try:
+            r = httpx.post(
+                f"{backend_url}/api/tools/{selected[\'file\']}/invoke",
+                json={"tool": selected["name"], "params": params},
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            await emit(f"Request failed: {e}", done=True)
+            return
+
+        if "error" in data and data["error"]:
+            await emit(f"Tool error: {data[\'error\']}", done=True)
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "message",
+                    "data": {"content": f"\\n\\n**Tool error — `{selected[\'name\']}`:**\\n```\\n{data[\'error\']}\\n```"},
+                })
+            return
+
+        output = data.get("output", "(no output)")
+        await emit(f"Done — {selected[\'name\']}", done=True)
+
+        if __event_emitter__:
+            await __event_emitter__({
+                "type": "message",
+                "data": {"content": f"\\n\\n**Tool output — `{selected[\'name\']}`:**\\n```\\n{output}\\n```"},
+            })
+'''
+
+# ---------------------------------------------------------------------------
 # OpenWebUI function: "Save to Knowledge" action
 # Served at /admin/functions/save_to_knowledge.py so users can copy-paste it
 # into OpenWebUI Admin → Functions.
@@ -392,6 +587,7 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     <h1>OpenManus Tool Manager</h1>
     <span>Write or upload a <code>.py</code> file — saved tools are injected into every chat automatically.</span>
     <span class="auto-note">✓ auto-loaded in every chat</span>
+    <a class="fn-link" href="/admin/functions/run_tool.py" target="_blank" title="Download and paste into OpenWebUI Admin → Functions to add a Run Tool picker button on AI messages">⬇ Run Tool function</a>
     <a class="fn-link" href="/admin/functions/save_to_knowledge.py" target="_blank" title="Download and paste into OpenWebUI Admin → Functions to add a Save-to-Knowledge button on AI messages">⬇ Save-to-Knowledge function</a>
   </header>
   <div class="main">
@@ -718,8 +914,12 @@ from fastapi.responses import PlainTextResponse
 
 @app.get("/admin/functions/save_to_knowledge.py", response_class=PlainTextResponse)
 async def get_save_to_knowledge_function():
-    """Serve the Save-to-Knowledge OpenWebUI action function source."""
     return PlainTextResponse(SAVE_TO_KNOWLEDGE_FUNCTION, media_type="text/x-python")
+
+
+@app.get("/admin/functions/run_tool.py", response_class=PlainTextResponse)
+async def get_run_tool_function():
+    return PlainTextResponse(RUN_TOOL_FUNCTION, media_type="text/x-python")
 
 
 @app.get("/api/tools")

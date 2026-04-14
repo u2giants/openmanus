@@ -79,7 +79,7 @@ services:
       - traefik.http.routers.novnc-http.middlewares=redirect-to-https
 networks:
   default:
-    name: openmanus-f9397c334d525e3ba812
+    name: e10kwzww46ljhrgz1qj08j6a
     external: true
 
 volumes:

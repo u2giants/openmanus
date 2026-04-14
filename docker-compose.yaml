@@ -13,7 +13,7 @@ services:
     ports:
       - '8001:8000'
     volumes:
-      - user-tools-data:/app/user_tools
+      - /data/coolify/openmanus/user_tools:/app/user_tools
     depends_on:
       - novnc
     networks:
@@ -85,4 +85,3 @@ networks:
 volumes:
   open-webui-data: null
   novnc-data: null
-  user-tools-data: null

@@ -140,23 +140,24 @@ OpenWebUI Action Function: Save to Knowledge
 Install via OpenWebUI Admin → Functions → + (New Function).
 Paste the entire contents of this file.
 
-When a user clicks the "Save to Knowledge" button that appears on AI messages,
-this action:
-  1. Takes the current conversation history.
-  2. Calls the chat API asking the AI to write a structured knowledge piece
-     summarizing what it just did / explained.
-  3. Saves the result as a file in the "OpenManus Knowledge" collection
-     (created automatically on first use).
+When a user clicks the "Save to Knowledge" button on an AI message, this action:
+  1. Sends the full conversation to the AI with instructions to identify the
+     current topic/issue and write a structured knowledge piece about it.
+     (The AI decides what constitutes the relevant scope — no arbitrary cutoff.)
+  2. Saves the result to the "OpenManus Knowledge" collection (auto-created).
 
 Valves (Admin → Functions → gear icon):
-  - knowledge_collection_name: Name of the Knowledge collection (default: "OpenManus Knowledge")
-  - base_url: Internal OpenWebUI URL for API calls (default: "http://localhost:8080")
-  - max_context_messages: How many recent messages to include (default: 10)
+  - knowledge_collection_name: collection to save into (default: "OpenManus Knowledge")
+  - base_url: internal OpenWebUI URL (default: "http://localhost:8080")
 """
 
 import time
 import httpx
 from pydantic import BaseModel, Field
+
+# Hard cap: never send more than this many messages to the summariser.
+# Protects against runaway token costs on very long sessions.
+_MAX_MESSAGES = 50
 
 
 class Action:
@@ -164,15 +165,11 @@ class Action:
     class Valves(BaseModel):
         knowledge_collection_name: str = Field(
             default="OpenManus Knowledge",
-            description="Name of the Knowledge collection to save pieces into. Created automatically if it doesn't exist.",
+            description="Name of the Knowledge collection to save pieces into. Created automatically if it doesn\'t exist.",
         )
         base_url: str = Field(
             default="http://localhost:8080",
             description="Internal base URL of the OpenWebUI instance (used for API calls).",
-        )
-        max_context_messages: int = Field(
-            default=10,
-            description="Number of recent messages to include when asking the AI to write the knowledge piece.",
         )
 
     def __init__(self):
@@ -232,20 +229,22 @@ class Action:
         system_message = {
             "role": "system",
             "content": (
-                "You are a knowledge base curator. Read the provided conversation and write "
-                "a concise, well-structured knowledge piece capturing the key information, "
-                "steps, decisions, or insights. Use this format:\\n\\n"
+                "You are a knowledge base curator. You will be given a conversation that may "
+                "cover multiple topics. Your job is to identify the main issue, task, or topic "
+                "being worked on — it is usually the most recent coherent thread, though it may "
+                "span the whole conversation. Ignore unrelated earlier exchanges.\\n\\n"
+                "Write a concise, well-structured knowledge piece about that topic using this format:\\n\\n"
                 "# [Descriptive Title]\\n\\n"
                 "**Summary:** One or two sentences describing what this covers.\\n\\n"
                 "## Key Points\\n"
                 "- ...\\n\\n"
                 "## Details\\n"
-                "(Include important steps, commands, code snippets, or decisions.)\\n\\n"
-                "Be specific and factual. Output only the knowledge piece — no preamble."
+                "(Steps, commands, code snippets, decisions, or anything needed to reproduce or understand this.)\\n\\n"
+                "Be specific and factual. Output only the knowledge piece — no preamble or explanation."
             ),
         }
         messages = [system_message] + conversation + [
-            {"role": "user", "content": "Write the knowledge piece now."}
+            {"role": "user", "content": "Identify the main topic and write the knowledge piece now."}
         ]
         try:
             r = httpx.post(
@@ -268,11 +267,11 @@ class Action:
         model = body.get("model", "")
         all_messages = body.get("messages", [])
 
-        n = self.valves.max_context_messages
-        recent = all_messages[-n:] if len(all_messages) > n else all_messages
+        # Full conversation, capped at _MAX_MESSAGES to limit token cost
+        msgs = all_messages[-_MAX_MESSAGES:] if len(all_messages) > _MAX_MESSAGES else all_messages
         clean = [
             {"role": m["role"], "content": m.get("content") or ""}
-            for m in recent
+            for m in msgs
             if m.get("role") in ("user", "assistant")
         ]
 
@@ -283,7 +282,7 @@ class Action:
         base_url = self.valves.base_url
         headers = self._auth_headers(user_token)
 
-        await emit("Writing knowledge piece…")
+        await emit("Identifying topic and writing knowledge piece…")
         text = self._generate_knowledge_text(base_url, headers, model, clean)
 
         if not text or not text.strip():
@@ -295,7 +294,7 @@ class Action:
         knowledge_id = self._get_or_create_knowledge(base_url, headers, collection_name)
 
         if not knowledge_id:
-            await emit(f"Could not access knowledge collection '{collection_name}'. Check base_url valve.", done=True)
+            await emit(f"Could not access knowledge collection \'{collection_name}\'. Check base_url valve.", done=True)
             return
 
         first_line = text.strip().splitlines()[0].lstrip("#").strip()[:60]
@@ -305,7 +304,7 @@ class Action:
         ok = self._save_text_to_knowledge(base_url, headers, knowledge_id, filename, text)
 
         if ok:
-            await emit(f"Saved to \'{collection_name}\' → \'{filename}\'", done=True)
+            await emit(f"Saved to \'{collection_name}\' \u2192 \'{filename}\'", done=True)
             if __event_emitter__:
                 await __event_emitter__({"type": "notification", "data": {"type": "success", "content": f"Saved to \'{collection_name}\'"}})
         else:

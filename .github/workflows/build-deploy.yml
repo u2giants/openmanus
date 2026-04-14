@@ -46,10 +46,16 @@ jobs:
       - name: Trigger Coolify deployment
         run: |
           if [ -n "${{ secrets.COOLIFY_WEBHOOK_URL }}" ] && [ -n "${{ secrets.COOLIFY_API_TOKEN }}" ]; then
-            curl -k -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
+            HTTP_CODE=$(curl -sk -o /tmp/coolify_resp.txt -w "%{http_code}" \
+              -X POST "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \
-              --fail-with-body
+              -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
+            cat /tmp/coolify_resp.txt
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "Coolify deploy triggered (HTTP $HTTP_CODE)"
+            else
+              echo "WARNING: Coolify webhook returned HTTP $HTTP_CODE — image pushed successfully, redeploy manually if needed."
+            fi
           else
             echo "COOLIFY_WEBHOOK_URL or COOLIFY_API_TOKEN not set, skipping deployment notification"
           fi

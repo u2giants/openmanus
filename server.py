@@ -335,7 +335,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     .fn-link { font-size: 11px; background: #45475a; border-radius: 4px; padding: 3px 8px; color: #cba6f7; text-decoration: none; white-space: nowrap; }
     .fn-link:hover { background: #585b70; }
     .main { display: flex; flex: 1; overflow: hidden; }
-    .sidebar { width: 200px; background: #181825; border-right: 1px solid #313244; display: flex; flex-direction: column; flex-shrink: 0; }
+    /* Sidebar */
+    .sidebar { width: 210px; background: #181825; border-right: 1px solid #313244; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-header { padding: 8px; border-bottom: 1px solid #313244; }
     .new-btn { width: 100%; padding: 6px; background: #89b4fa; color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px; }
     .new-btn:hover { background: #74c7ec; }
@@ -345,25 +346,44 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     .tool-item.active { background: #45475a; }
     .tool-item-filename { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tool-item.active .tool-item-filename { color: #89b4fa; }
-    .tool-item-meta { font-size: 11px; color: #a6adc8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .tool-item-meta.ok { color: #a6e3a1; }
+    .tool-item-meta { font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #a6adc8; }
+    .tool-item-meta.ok  { color: #a6e3a1; }
     .tool-item-meta.err { color: #f38ba8; }
+    .tool-item-meta.warn{ color: #f9e2af; }
+    /* Editor panel */
     .editor-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     .editor-toolbar { padding: 7px 10px; background: #181825; border-bottom: 1px solid #313244; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
     .tool-name-input { padding: 5px 8px; background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 13px; width: 180px; outline: none; }
     .tool-name-input:focus { border-color: #89b4fa; }
     .btn { padding: 5px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }
-    .btn-save { background: #a6e3a1; color: #1e1e2e; }
-    .btn-save:hover { background: #94e2d5; }
+    .btn-save   { background: #a6e3a1; color: #1e1e2e; }
+    .btn-save:hover   { background: #94e2d5; }
     .btn-delete { background: #f38ba8; color: #1e1e2e; }
     .btn-delete:hover { background: #eba0ac; }
     .btn-upload { background: #cba6f7; color: #1e1e2e; }
     .btn-upload:hover { background: #b4befe; }
+    .btn-run    { background: #fab387; color: #1e1e2e; }
+    .btn-run:hover    { background: #f9e2af; }
     .btn:disabled { opacity: 0.4; cursor: default; }
-    .cm-editor-wrap { flex: 1; overflow: hidden; }
+    .cm-editor-wrap { flex: 1; overflow: hidden; min-height: 0; }
     .CodeMirror { height: 100%; font-size: 13px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+    /* Invoke panel */
+    .invoke-panel { border-top: 2px solid #313244; background: #181825; flex-shrink: 0; display: none; flex-direction: column; }
+    .invoke-panel.open { display: flex; }
+    .invoke-header { padding: 6px 10px; display: flex; gap: 8px; align-items: center; background: #1e1e2e; border-bottom: 1px solid #313244; flex-shrink: 0; }
+    .invoke-header span { font-size: 12px; font-weight: 600; color: #fab387; }
+    .invoke-tool-select { background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 12px; padding: 3px 6px; outline: none; }
+    .invoke-body { display: flex; gap: 0; overflow: hidden; height: 180px; }
+    .invoke-params-wrap { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #313244; }
+    .invoke-label { font-size: 10px; color: #585b70; padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .05em; flex-shrink: 0; }
+    .invoke-params { flex: 1; background: #1e1e2e; color: #cdd6f4; border: none; outline: none; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 10px; resize: none; width: 100%; }
+    .invoke-output-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .invoke-output { flex: 1; padding: 6px 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: #a6adc8; }
+    .invoke-output.ok  { color: #a6e3a1; }
+    .invoke-output.err { color: #f38ba8; }
+    /* Status bar */
     .status-bar { padding: 5px 12px; background: #181825; border-top: 1px solid #313244; font-size: 12px; color: #a6adc8; flex-shrink: 0; }
-    .ok { color: #a6e3a1; }
+    .ok  { color: #a6e3a1; }
     .err { color: #f38ba8; }
   </style>
 </head>
@@ -384,13 +404,31 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     <div class="editor-panel">
       <div class="editor-toolbar">
         <input class="tool-name-input" id="toolName" placeholder="filename (no .py)" spellcheck="false" />
-        <button class="btn btn-save" onclick="saveTool()">Save</button>
+        <button class="btn btn-save"   onclick="saveTool()">Save</button>
         <button class="btn btn-upload" onclick="document.getElementById('fileUpload').click()">Upload .py</button>
         <input type="file" id="fileUpload" accept=".py" style="display:none" onchange="uploadFile(event)" />
         <button class="btn btn-delete" id="deleteBtn" onclick="deleteTool()" disabled>Delete</button>
       </div>
       <div class="cm-editor-wrap" id="cmWrap">
         <textarea id="editor"></textarea>
+      </div>
+      <!-- Invoke panel — shown when a valid tool is selected -->
+      <div class="invoke-panel" id="invokePanel">
+        <div class="invoke-header">
+          <span>▶ Invoke</span>
+          <select class="invoke-tool-select" id="invokeToolSelect" onchange="onToolSelect()"></select>
+          <button class="btn btn-run" id="runBtn" onclick="runTool()">Run</button>
+        </div>
+        <div class="invoke-body">
+          <div class="invoke-params-wrap">
+            <div class="invoke-label">Parameters (JSON)</div>
+            <textarea class="invoke-params" id="invokeParams" spellcheck="false" placeholder="{}"></textarea>
+          </div>
+          <div class="invoke-output-wrap">
+            <div class="invoke-label">Output</div>
+            <div class="invoke-output" id="invokeOutput">—</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -420,6 +458,9 @@ class MyCustomTool(BaseTool):
         return ToolResult(output=result)
 `;
 
+    // All status data keyed by filename stem
+    let statusMap = {};
+
     const cm = CodeMirror.fromTextArea(document.getElementById('editor'), {
       mode: 'python',
       theme: 'dracula',
@@ -438,9 +479,30 @@ class MyCustomTool(BaseTool):
     window.addEventListener('resize', resizeCM);
     setTimeout(resizeCM, 50);
 
+    // Build sample JSON params from a parameters schema object
+    function schemaToSample(schema) {
+      if (!schema || schema.type !== 'object' || !schema.properties) return '{}';
+      const sample = {};
+      for (const [key, prop] of Object.entries(schema.properties)) {
+        switch (prop.type) {
+          case 'string':  sample[key] = ''; break;
+          case 'number':
+          case 'integer': sample[key] = 0; break;
+          case 'boolean': sample[key] = false; break;
+          case 'array':   sample[key] = []; break;
+          case 'object':  sample[key] = {}; break;
+          default:        sample[key] = null;
+        }
+      }
+      return JSON.stringify(sample, null, 2);
+    }
+
     async function loadTools() {
       const r = await fetch('/api/tools/status');
       const statuses = await r.json();
+      statusMap = {};
+      statuses.forEach(s => { statusMap[s.file] = s; });
+
       const list = document.getElementById('toolList');
       const active = document.getElementById('toolName').value;
       list.innerHTML = '';
@@ -457,18 +519,96 @@ class MyCustomTool(BaseTool):
         const metaEl = document.createElement('div');
         if (s.error) {
           metaEl.className = 'tool-item-meta err';
-          metaEl.textContent = '✗ ' + s.error.split('\n').pop();
+          metaEl.textContent = '✗ ' + s.error.split('\\n').pop();
+          div.title = s.error;
         } else if (s.tools.length > 0) {
           metaEl.className = 'tool-item-meta ok';
           metaEl.textContent = '✓ ' + s.tools.map(t => t.name).join(', ');
-          div.title = s.tools.map(t => t.name + ': ' + t.description).join('\n');
+          div.title = s.tools.map(t => t.name + ': ' + t.description).join('\\n');
         } else {
-          metaEl.className = 'tool-item-meta';
-          metaEl.textContent = 'no BaseTool found';
+          metaEl.className = 'tool-item-meta warn';
+          metaEl.textContent = '⚠ no BaseTool subclass found';
+          div.title = 'File loaded OK but no class extending BaseTool was detected. Check class definition and imports.';
         }
         div.appendChild(metaEl);
         list.appendChild(div);
       });
+
+      // Refresh invoke panel for currently open tool
+      updateInvokePanel(active);
+    }
+
+    function updateInvokePanel(filename) {
+      const panel = document.getElementById('invokePanel');
+      const sel   = document.getElementById('invokeToolSelect');
+      const s = statusMap[filename];
+      if (!s || !s.tools || s.tools.length === 0) {
+        panel.classList.remove('open');
+        setTimeout(resizeCM, 20);
+        return;
+      }
+      // Populate tool selector
+      const prev = sel.value;
+      sel.innerHTML = '';
+      s.tools.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.name;
+        opt.textContent = t.name;
+        opt.dataset.params = schemaToSample(t.parameters);
+        sel.appendChild(opt);
+      });
+      // Restore selection if still valid
+      if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+      onToolSelect();
+      panel.classList.add('open');
+      setTimeout(resizeCM, 20);
+    }
+
+    function onToolSelect() {
+      const sel = document.getElementById('invokeToolSelect');
+      const opt = sel.options[sel.selectedIndex];
+      if (opt) {
+        document.getElementById('invokeParams').value = opt.dataset.params || '{}';
+        document.getElementById('invokeOutput').textContent = '—';
+        document.getElementById('invokeOutput').className = 'invoke-output';
+      }
+    }
+
+    async function runTool() {
+      const filename = document.getElementById('toolName').value.trim();
+      const toolName = document.getElementById('invokeToolSelect').value;
+      const paramsRaw = document.getElementById('invokeParams').value.trim();
+      const outEl = document.getElementById('invokeOutput');
+      const runBtn = document.getElementById('runBtn');
+
+      let params;
+      try { params = JSON.parse(paramsRaw || '{}'); }
+      catch (e) { outEl.textContent = 'Invalid JSON: ' + e.message; outEl.className = 'invoke-output err'; return; }
+
+      runBtn.disabled = true;
+      outEl.textContent = 'Running…';
+      outEl.className = 'invoke-output';
+
+      try {
+        const r = await fetch('/api/tools/' + filename + '/invoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool: toolName, params })
+        });
+        const data = await r.json();
+        if (data.error) {
+          outEl.textContent = data.error;
+          outEl.className = 'invoke-output err';
+        } else {
+          outEl.textContent = data.output;
+          outEl.className = 'invoke-output ok';
+        }
+      } catch (e) {
+        outEl.textContent = 'Request failed: ' + e.message;
+        outEl.className = 'invoke-output err';
+      } finally {
+        runBtn.disabled = false;
+      }
     }
 
     async function openTool(name) {
@@ -479,8 +619,9 @@ class MyCustomTool(BaseTool):
       cm.setValue(data.code);
       document.getElementById('deleteBtn').disabled = false;
       document.querySelectorAll('.tool-item').forEach(el =>
-        el.classList.toggle('active', el.textContent === name));
+        el.classList.toggle('active', el.querySelector('.tool-item-filename')?.textContent === name + '.py'));
       setStatus('Loaded: ' + name + '.py', 'ok');
+      updateInvokePanel(name);
     }
 
     function newTool() {
@@ -488,6 +629,8 @@ class MyCustomTool(BaseTool):
       cm.setValue(TEMPLATE);
       document.getElementById('deleteBtn').disabled = true;
       document.querySelectorAll('.tool-item').forEach(el => el.classList.remove('active'));
+      document.getElementById('invokePanel').classList.remove('open');
+      setTimeout(resizeCM, 20);
       setStatus('New tool — set a filename and save.', '');
       document.getElementById('toolName').focus();
     }
@@ -588,7 +731,7 @@ async def list_tools():
 
 @app.get("/api/tools/status")
 async def tools_status():
-    """Load every user tool and return its name, description, and any import error."""
+    """Load every user tool and return name, description, parameters schema, and any import error."""
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     results = []
     try:
@@ -620,11 +763,61 @@ async def tools_status():
                     entry["tools"].append({
                         "name": getattr(instance, "name", attr_name),
                         "description": getattr(instance, "description", ""),
+                        "parameters": getattr(instance, "parameters", {}),
                     })
         except Exception as e:
             entry["error"] = str(e)
         results.append(entry)
     return results
+
+
+@app.post("/api/tools/{name}/invoke")
+async def invoke_tool(name: str, request: Request):
+    """Instantiate a user tool and call execute() with the provided parameters."""
+    if not name.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="Invalid tool name")
+    path = USER_TOOLS_DIR / f"{name}.py"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    body = await request.json()
+    tool_name = body.get("tool")   # which tool class (by name) to invoke
+    params = body.get("params", {})
+
+    try:
+        from app.tool.base import BaseTool
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot import BaseTool: {e}")
+
+    module_name = f"_user_tools_invoke.{name}"
+    sys.modules.pop(module_name, None)
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import error: {e}")
+
+    # Find the requested tool (or first tool if not specified)
+    instance = None
+    for attr_name in dir(mod):
+        obj = getattr(mod, attr_name)
+        if (isinstance(obj, type) and issubclass(obj, BaseTool)
+                and obj is not BaseTool and obj.__module__ == module_name):
+            inst = obj()
+            if tool_name is None or getattr(inst, "name", None) == tool_name:
+                instance = inst
+                break
+
+    if instance is None:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found in {name}.py")
+
+    try:
+        result = await instance.execute(**params)
+        return {"output": str(result.output) if hasattr(result, "output") else str(result)}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/tools/{name}")

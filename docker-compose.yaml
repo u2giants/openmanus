@@ -14,11 +14,10 @@ services:
       - '8001:8000'
     volumes:
       - /data/coolify/openmanus/user_tools:/app/user_tools
+      - /mnt/tailscale/souls:/app/custom_souls
     depends_on:
       - novnc
-    networks:
-      default:
-        ipv4_address: 10.0.4.20
+
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'
     restart: unless-stopped
@@ -39,6 +38,8 @@ services:
       - '3000:8080'
     volumes:
       - 'open-webui-data:/app/backend/data'
+    depends_on:
+      - openmanus-backend
     labels:
       - traefik.enable=true
       - traefik.http.routers.open-webui.rule=Host(`manus.designflow.app`)
@@ -50,6 +51,7 @@ services:
       - traefik.http.routers.open-webui-http.entrypoints=http
       - traefik.http.routers.open-webui-http.middlewares=redirect-to-https
       - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+
   novnc:
     image: lscr.io/linuxserver/webtop:ubuntu-mate
     restart: unless-stopped
@@ -77,11 +79,7 @@ services:
       - traefik.http.routers.novnc-http.rule=Host(`vnc.designflow.app`)
       - traefik.http.routers.novnc-http.entrypoints=http
       - traefik.http.routers.novnc-http.middlewares=redirect-to-https
-networks:
-  default:
-    name: e10kwzww46ljhrgz1qj08j6a
-    external: true
 
 volumes:
-  open-webui-data: null
-  novnc-data: null
+  open-webui-data:
+  novnc-data:

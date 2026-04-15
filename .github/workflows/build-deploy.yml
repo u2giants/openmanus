@@ -43,13 +43,18 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            docker pull ghcr.io/u2giants/openmanus:main
-            docker restart openmanus-backend-e10kwzww46ljhrgz1qj08j6a
-            echo "Deploy complete: openmanus-backend restarted with new image"
+      - name: Deploy via Coolify webhook
+        env:
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            "http://178.156.180.212:8000/api/v1/deploy?uuid=e10kwzww46ljhrgz1qj08j6a&force=true")
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+          echo "Coolify response: $body"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Deploy failed with HTTP $status"
+            exit 1
+          fi
+          echo "Deploy triggered successfully (HTTP $status)"

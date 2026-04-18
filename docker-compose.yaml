@@ -2,6 +2,7 @@ version: '3.8'
 services:
   openmanus-backend:
     image: 'ghcr.io/u2giants/openmanus:main'
+    pull_policy: always
     restart: unless-stopped
     entrypoint: ["./entrypoint.sh"]
     environment:

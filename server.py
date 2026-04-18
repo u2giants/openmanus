@@ -93,7 +93,11 @@ def _owui_tool_id(stem: str) -> str:
     return f"openmanus__{stem}"
 
 
-async def _owui_sync_one(stem: str, owui_url: str, api_key: str) -> tuple:
+def _session_token(request: Request) -> str:
+    return request.cookies.get("token", "")
+
+
+async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
     try:
         from app.tool.base import BaseTool as _BT
@@ -124,7 +128,7 @@ async def _owui_sync_one(stem: str, owui_url: str, api_key: str) -> tuple:
         return False, "No BaseTool subclass found"
     code = generate_owui_tool_code(stem, tools_info)
     tool_id = _owui_tool_id(stem)
-    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with _hx.AsyncClient(timeout=15) as c:
         exists = (await c.get(f"{owui_url}/api/v1/tools/{tool_id}", headers=hdrs)).status_code == 200
         payload = {
@@ -140,17 +144,17 @@ async def _owui_sync_one(stem: str, owui_url: str, api_key: str) -> tuple:
         return False, f"HTTP {r.status_code}: {r.text[:200]}"
 
 
-async def _owui_delete_one(stem: str, owui_url: str, api_key: str) -> tuple:
+async def _owui_delete_one(stem: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
-    hdrs = {"Authorization": f"Bearer {api_key}"}
+    hdrs = {"Authorization": f"Bearer {token}"}
     async with _hx.AsyncClient(timeout=10) as c:
         r = await c.delete(f"{owui_url}/api/v1/tools/{_owui_tool_id(stem)}/delete", headers=hdrs)
         return r.status_code in (200, 204, 404), f"HTTP {r.status_code}"
 
 
-async def _owui_install_fn(fn_id: str, fn_name: str, code: str, owui_url: str, api_key: str) -> tuple:
+async def _owui_install_fn(fn_id: str, fn_name: str, code: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
-    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {"id": fn_id, "name": fn_name, "content": code,
                "meta": {"description": fn_name, "manifest": {}}}
     async with _hx.AsyncClient(timeout=15) as c:
@@ -768,18 +772,14 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
         </div>
         <div class="settings-msg" id="settingsMsg"></div>
         <details style="margin-top:10px">
-          <summary style="font-size:11px;color:#585b70;cursor:pointer">Manual API key (advanced)</summary>
+          <summary style="font-size:11px;color:#585b70;cursor:pointer">Advanced: change OpenWebUI URL</summary>
           <div style="margin-top:8px">
             <div class="settings-field">
               <label>OpenWebUI URL (internal)</label>
               <input id="owuiUrl" class="settings-input" type="text" placeholder="http://open-webui:8080" />
             </div>
-            <div class="settings-field">
-              <label>API Key</label>
-              <input id="owuiKey" class="settings-input" type="password" placeholder="sk-… (leave blank to keep existing)" />
-            </div>
             <div class="settings-row-btns">
-              <button class="btn btn-save" onclick="saveSettings()">Save</button>
+              <button class="btn btn-save" onclick="saveSettings()">Save URL</button>
             </div>
           </div>
         </details>
@@ -966,9 +966,6 @@ class MyCustomTool(BaseTool):
         const r = await fetch('/api/owui/settings');
         const s = await r.json();
         document.getElementById('owuiUrl').value = s.owui_url || 'http://open-webui:8080';
-        if (s.has_api_key) {
-          document.getElementById('owuiKey').placeholder = 'sk-… (key set — leave blank to keep)';
-        }
         owuiConnected = s.connected || false;
         syncedTools = new Set(s.synced_tools || []);
         updateOwuiBadge();
@@ -1013,16 +1010,12 @@ class MyCustomTool(BaseTool):
 
     async function saveSettings() {
       const url = document.getElementById('owuiUrl').value.trim();
-      const key = document.getElementById('owuiKey').value.trim();
       const msg = document.getElementById('settingsMsg');
       msg.textContent = 'Saving…'; msg.className = 'settings-msg';
-      const body = { owui_url: url };
-      if (key) body.api_key = key;
       try {
-        const r = await fetch('/api/owui/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const r = await fetch('/api/owui/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ owui_url: url }) });
         if (r.ok) {
           msg.textContent = '✓ Saved'; msg.className = 'settings-msg ok';
-          if (key) document.getElementById('owuiKey').value = '';
           await loadSettings();
           await loadTools();
         } else {
@@ -1033,13 +1026,10 @@ class MyCustomTool(BaseTool):
 
     async function testConnection() {
       const url = document.getElementById('owuiUrl').value.trim();
-      const key = document.getElementById('owuiKey').value.trim();
       const msg = document.getElementById('settingsMsg');
       msg.textContent = 'Testing…'; msg.className = 'settings-msg';
       try {
-        const body = { owui_url: url };
-        if (key) body.api_key = key;
-        const r = await fetch('/api/owui/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const r = await fetch('/api/owui/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ owui_url: url }) });
         const d = await r.json();
         msg.textContent = d.ok ? ('✓ ' + d.message) : ('✗ ' + d.message);
         msg.className = 'settings-msg ' + (d.ok ? 'ok' : 'err');
@@ -1392,9 +1382,11 @@ async def save_tool(name: str, request: Request):
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     (USER_TOOLS_DIR / f"{name}.py").write_text(code)
     s = get_settings()
+    token = _session_token(request)
     sync_result = None
-    if s.get("api_key"):
-        ok, msg = await _owui_sync_one(name, s.get("owui_url", "http://open-webui:8080"), s["api_key"])
+    if token:
+        owui_url = s.get("owui_url", "http://open-webui:8080")
+        ok, msg = await _owui_sync_one(name, owui_url, token)
         if ok:
             synced = s.get("synced_tools", [])
             if name not in synced:
@@ -1406,7 +1398,7 @@ async def save_tool(name: str, request: Request):
 
 
 @app.delete("/api/tools/{name}")
-async def delete_tool(name: str):
+async def delete_tool(name: str, request: Request):
     if not name.replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="Invalid tool name")
     path = USER_TOOLS_DIR / f"{name}.py"
@@ -1414,8 +1406,9 @@ async def delete_tool(name: str):
         raise HTTPException(status_code=404, detail="Tool not found")
     path.unlink()
     s = get_settings()
-    if s.get("api_key"):
-        await _owui_delete_one(name, s.get("owui_url", "http://open-webui:8080"), s["api_key"])
+    token = _session_token(request)
+    if token:
+        await _owui_delete_one(name, s.get("owui_url", "http://open-webui:8080"), token)
         s["synced_tools"] = [t for t in s.get("synced_tools", []) if t != name]
         write_settings(s)
     return {"deleted": True, "name": name}
@@ -1426,22 +1419,22 @@ async def delete_tool(name: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/owui/settings")
-async def owui_get_settings():
+async def owui_get_settings(request: Request):
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
-    api_key = s.get("api_key", "")
+    token = _session_token(request)
     connected = False
-    if api_key:
+    if token:
         try:
             import httpx as _hx
             async with _hx.AsyncClient(timeout=5) as c:
                 r = await c.get(f"{owui_url}/api/v1/tools/",
-                                headers={"Authorization": f"Bearer {api_key}"})
+                                headers={"Authorization": f"Bearer {token}"})
                 connected = r.status_code == 200
         except Exception:
             pass
-    return {"owui_url": owui_url, "has_api_key": bool(api_key),
-            "connected": connected, "synced_tools": s.get("synced_tools", [])}
+    return {"owui_url": owui_url, "connected": connected,
+            "synced_tools": s.get("synced_tools", [])}
 
 
 @app.post("/api/owui/settings")
@@ -1450,25 +1443,23 @@ async def owui_save_settings(request: Request):
     s = get_settings()
     if "owui_url" in body:
         s["owui_url"] = body["owui_url"].rstrip("/")
-    if body.get("api_key"):
-        s["api_key"] = body["api_key"]
     write_settings(s)
     return {"saved": True}
 
 
 @app.post("/api/owui/test")
 async def owui_test(request: Request):
-    body = await request.json()
     s = get_settings()
+    body = await request.json()
     owui_url = body.get("owui_url", s.get("owui_url", "http://open-webui:8080")).rstrip("/")
-    api_key = body.get("api_key") or s.get("api_key", "")
-    if not api_key:
-        return {"ok": False, "message": "No API key — enter one and save first"}
+    token = _session_token(request)
+    if not token:
+        return {"ok": False, "message": "No session cookie — are you logged into OpenWebUI?"}
     import httpx as _hx
     try:
         async with _hx.AsyncClient(timeout=10) as c:
             r = await c.get(f"{owui_url}/api/v1/tools/",
-                            headers={"Authorization": f"Bearer {api_key}"})
+                            headers={"Authorization": f"Bearer {token}"})
             if r.status_code == 200:
                 return {"ok": True, "message": f"Connected — {len(r.json())} tool(s) registered in OpenWebUI"}
             return {"ok": False, "message": f"HTTP {r.status_code}: {r.text[:120]}"}
@@ -1477,18 +1468,18 @@ async def owui_test(request: Request):
 
 
 @app.post("/api/owui/sync-all")
-async def owui_sync_all():
+async def owui_sync_all(request: Request):
+    token = _session_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="No session cookie — are you logged into OpenWebUI?")
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
-    api_key = s.get("api_key", "")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="OpenWebUI API key not configured")
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     results, synced = {}, []
     for py_file in sorted(USER_TOOLS_DIR.glob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        ok, msg = await _owui_sync_one(py_file.stem, owui_url, api_key)
+        ok, msg = await _owui_sync_one(py_file.stem, owui_url, token)
         results[py_file.stem] = {"ok": ok, "message": msg}
         if ok:
             synced.append(py_file.stem)
@@ -1499,46 +1490,36 @@ async def owui_sync_all():
 
 @app.post("/api/owui/bootstrap")
 async def owui_bootstrap(request: Request):
-    """Auto-configure OWUI integration using the user's existing browser session cookie."""
+    """Verify the user's existing session cookie works against OpenWebUI."""
+    token = _session_token(request)
+    if not token:
+        return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged into OpenWebUI first."}
+    s = get_settings()
+    owui_url = s.get("owui_url", "http://open-webui:8080")
+    import httpx as _hx
     try:
-        token = request.cookies.get("token")
-        if not token:
-            return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged into OpenWebUI first."}
-        s = get_settings()
-        owui_url = s.get("owui_url", "http://open-webui:8080")
-        import httpx as _hx
-        hdrs = {"Authorization": f"Bearer {token}"}
         async with _hx.AsyncClient(timeout=10) as c:
-            # Try GET first (some versions), then POST
-            for method in ("get", "post"):
-                r = await getattr(c, method)(f"{owui_url}/api/v1/auths/api_key", headers=hdrs)
-                if r.status_code == 200:
-                    try:
-                        data = r.json()
-                    except Exception:
-                        continue
-                    api_key = data.get("api_key") or data.get("key")
-                    if api_key:
-                        s["api_key"] = api_key
-                        write_settings(s)
-                        return {"ok": True, "message": "Connected — API key auto-generated from your session."}
-            return {"ok": False, "message": f"Could not retrieve API key (last HTTP {r.status_code}). Response: {r.text[:200]}"}
+            r = await c.get(f"{owui_url}/api/v1/tools/",
+                            headers={"Authorization": f"Bearer {token}"})
+            if r.status_code == 200:
+                return {"ok": True, "message": f"Session verified — {len(r.json())} tool(s) in OpenWebUI."}
+            return {"ok": False, "message": f"Session check failed: HTTP {r.status_code}"}
     except Exception as e:
         return {"ok": False, "message": f"Error: {e}"}
 
 
 @app.post("/api/owui/install/{func_id}")
-async def owui_install_function(func_id: str):
+async def owui_install_function(func_id: str, request: Request):
+    token = _session_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="No session cookie — are you logged into OpenWebUI?")
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
-    api_key = s.get("api_key", "")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="OpenWebUI API key not configured")
     if func_id == "run_tool":
-        ok, msg = await _owui_install_fn("run_tool", "Run Tool", RUN_TOOL_FUNCTION, owui_url, api_key)
+        ok, msg = await _owui_install_fn("run_tool", "Run Tool", RUN_TOOL_FUNCTION, owui_url, token)
     elif func_id == "save_to_knowledge":
         ok, msg = await _owui_install_fn("save_to_knowledge", "Save to Knowledge",
-                                          SAVE_TO_KNOWLEDGE_FUNCTION, owui_url, api_key)
+                                          SAVE_TO_KNOWLEDGE_FUNCTION, owui_url, token)
     else:
         raise HTTPException(status_code=404, detail="Unknown function")
     return {"ok": ok, "message": msg}

@@ -28,9 +28,9 @@
 
 ## Decision 2026-04-11-003: Add missing env vars to docker-compose.yaml
 
-**Context**: The [`docker-compose.yaml`](docker-compose.yaml) (used by Coolify) only passes `OPENAI_API_KEY`, but the application also requires `DAYTONA_API_KEY`. The local [`docker-compose.yml`](docker-compose.yml) has the correct set of env vars.
+**Context**: The [`docker-compose.yaml`](docker-compose.yaml) (used by Coolify) only passes `OPENAI_API_KEY`, but the application also requires `DAYTONA_API_KEY`. The local [`docker-compose.yaml`](docker-compose.yaml) has the correct set of env vars.
 
-**Decision**: Update [`docker-compose.yaml`](docker-compose.yaml) to include `DAYTONA_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_BASE_URL` environment variables, matching [`docker-compose.yml`](docker-compose.yml).
+**Decision**: Update [`docker-compose.yaml`](docker-compose.yaml) to include `DAYTONA_API_KEY`, `OPENROUTER_API_KEY`, and `OPENAI_API_BASE_URL` environment variables, matching [`docker-compose.yaml`](docker-compose.yaml).
 
 **Rationale**: Both compose files should be consistent. The Coolify-deployed version was missing critical env vars.
 

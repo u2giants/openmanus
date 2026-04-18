@@ -16,6 +16,12 @@ services:
     volumes:
       - /data/coolify/openmanus/user_tools:/app/user_tools
       - /mnt/tailscale/souls:/app/custom_souls
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       - novnc
     labels:

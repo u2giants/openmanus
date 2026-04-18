@@ -130,14 +130,15 @@ async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
     tool_id = _owui_tool_id(stem)
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with _hx.AsyncClient(timeout=15) as c:
-        exists = (await c.get(f"{owui_url}/api/v1/tools/{tool_id}", headers=hdrs)).status_code == 200
+        existing = await c.get(f"{owui_url}/api/v1/tools/id/{tool_id}", headers=hdrs)
+        exists = existing.status_code == 200
         payload = {
             "id": tool_id,
             "name": (tools_info[0]["description"] or stem)[:50],
             "content": code,
             "meta": {"description": tools_info[0]["description"], "manifest": {}},
         }
-        url = f"{owui_url}/api/v1/tools/{tool_id}/update" if exists else f"{owui_url}/api/v1/tools/create"
+        url = f"{owui_url}/api/v1/tools/id/{tool_id}/update" if exists else f"{owui_url}/api/v1/tools/create"
         r = await c.post(url, headers=hdrs, json=payload)
         if r.status_code < 300:
             return True, "Synced"
@@ -148,7 +149,7 @@ async def _owui_delete_one(stem: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
     hdrs = {"Authorization": f"Bearer {token}"}
     async with _hx.AsyncClient(timeout=10) as c:
-        r = await c.delete(f"{owui_url}/api/v1/tools/{_owui_tool_id(stem)}/delete", headers=hdrs)
+        r = await c.delete(f"{owui_url}/api/v1/tools/id/{_owui_tool_id(stem)}/delete", headers=hdrs)
         return r.status_code in (200, 204, 404), f"HTTP {r.status_code}"
 
 
@@ -158,8 +159,8 @@ async def _owui_install_fn(fn_id: str, fn_name: str, code: str, owui_url: str, t
     payload = {"id": fn_id, "name": fn_name, "content": code,
                "meta": {"description": fn_name, "manifest": {}}}
     async with _hx.AsyncClient(timeout=15) as c:
-        exists = (await c.get(f"{owui_url}/api/v1/functions/{fn_id}", headers=hdrs)).status_code == 200
-        url = f"{owui_url}/api/v1/functions/{fn_id}/update" if exists else f"{owui_url}/api/v1/functions/create"
+        exists = (await c.get(f"{owui_url}/api/v1/functions/id/{fn_id}", headers=hdrs)).status_code == 200
+        url = f"{owui_url}/api/v1/functions/id/{fn_id}/update" if exists else f"{owui_url}/api/v1/functions/create"
         r = await c.post(url, headers=hdrs, json=payload)
         if r.status_code < 300:
             return True, "Installed"

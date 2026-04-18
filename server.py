@@ -980,7 +980,7 @@ class MyCustomTool(BaseTool):
       const syncBtn = document.getElementById('syncAllBtn');
       if (owuiConnected) {
         badge.className = 'owui-badge owui-connected';
-        badge.textContent = '☁ Connected to OpenWebUI — enable tools via ⚡ in chat';
+        badge.textContent = '☁ Connected to OpenWebUI — select tools via ◈ in chat (use Manus Agent model)';
         syncBtn.style.display = '';
       } else {
         badge.className = 'owui-badge owui-disconnected';

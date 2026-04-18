@@ -17,7 +17,7 @@ services:
       - /data/coolify/openmanus/user_tools:/app/user_tools
       - /mnt/tailscale/souls:/app/custom_souls
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3

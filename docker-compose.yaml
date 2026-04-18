@@ -20,7 +20,7 @@ services:
       - novnc
     labels:
       - traefik.enable=true
-      - traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && PathPrefix(`/admin/`)
+      - "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (PathPrefix(`/admin/`) || PathPrefix(`/api/tools`))"
       - traefik.http.routers.openmanus-admin.entrypoints=https
       - traefik.http.routers.openmanus-admin.tls=true
       - traefik.http.routers.openmanus-admin.tls.certresolver=letsencrypt

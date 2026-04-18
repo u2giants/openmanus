@@ -89,14 +89,14 @@ jobs:
     steps:
       - name: Wait for Coolify deployment to settle
         run: |
-          echo "Waiting 90s for Coolify to pull image and restart containers..."
-          sleep 90
+          echo "Waiting 150s for Coolify to pull image and restart containers..."
+          sleep 150
 
       - name: Smoke check critical routes
         run: |
           PATHS=("/admin/tools" "/api/tools" "/")
-          MAX_RETRIES=5
-          RETRY_DELAY=15
+          MAX_RETRIES=8
+          RETRY_DELAY=20
           FAILED=0
 
           for path in "${PATHS[@]}"; do

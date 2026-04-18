@@ -68,7 +68,7 @@ def generate_owui_tool_code(file_stem: str, tools_info: list) -> str:
         desc = tool.get("description", "")
         params = tool.get("parameters", {})
         sig, docs, param_dict = _py_sig(params.get("properties", {}), params.get("required", []))
-        sig_str = ", ".join(["self"] + sig)
+        sig_str = ", ".join(sig)
         docs_str = "\n".join(docs) if docs else "        :return: tool output"
         methods.append(
             f'    def {name}(self, {sig_str}) -> str:\n'

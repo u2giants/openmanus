@@ -22,6 +22,144 @@ app = FastAPI(title="OpenManus API")
 
 # Directory for user-defined tools (persisted via Docker volume)
 USER_TOOLS_DIR = Path("/app/user_tools")
+SETTINGS_FILE = USER_TOOLS_DIR / ".settings.json"
+
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+def get_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try:
+            return json.loads(SETTINGS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def write_settings(s: dict) -> None:
+    USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# OpenWebUI sync helpers
+# ---------------------------------------------------------------------------
+
+def _py_sig(props: dict, required: list) -> tuple:
+    """Return (signature_parts, param_doc_lines, param_dict_str) for a tool."""
+    type_map = {"string": ("str", '""'), "integer": ("int", "0"), "number": ("float", "0.0"),
+                "boolean": ("bool", "False"), "array": ("list", "[]"), "object": ("dict", "{}")}
+    sig, docs = [], []
+    for pname, pinfo in props.items():
+        py_t, default = type_map.get(pinfo.get("type", "string"), ("str", '""'))
+        sig.append(f"{pname}: {py_t}" if pname in required else f"{pname}: {py_t} = {default}")
+        docs.append(f"        :param {pname}: {pinfo.get('description', '')}")
+    param_dict = ", ".join(f'"{k}": {k}' for k in props)
+    return sig, docs, param_dict
+
+
+def generate_owui_tool_code(file_stem: str, tools_info: list) -> str:
+    first_desc = tools_info[0].get("description", file_stem) if tools_info else file_stem
+    methods = []
+    for tool in tools_info:
+        name = tool["name"]
+        desc = tool.get("description", "")
+        params = tool.get("parameters", {})
+        sig, docs, param_dict = _py_sig(params.get("properties", {}), params.get("required", []))
+        sig_str = ", ".join(["self"] + sig)
+        docs_str = "\n".join(docs) if docs else "        :return: tool output"
+        methods.append(
+            f'    def {name}(self, {sig_str}) -> str:\n'
+            f'        """\n        {desc}\n{docs_str}\n        :return: tool output\n        """\n'
+            f'        import httpx\n'
+            f'        try:\n'
+            f'            r = httpx.post(\n'
+            f'                "http://openmanus-backend:8000/api/tools/{file_stem}/invoke",\n'
+            f'                json={{"tool": "{name}", "params": {{{{{param_dict}}}}}}}, timeout=60)\n'
+            f'            d = r.json()\n'
+            f'            return str(d.get("error") or d.get("output", "(no output)"))\n'
+            f'        except Exception as e:\n'
+            f'            return f"Error: {{e}}"\n'
+        )
+    return (
+        f'"""\n{first_desc}\nAuto-synced from OpenManus Tool Manager.\n"""\n\n\n'
+        f"class Tools:\n    def __init__(self): pass\n\n" + "\n".join(methods)
+    )
+
+
+def _owui_tool_id(stem: str) -> str:
+    return f"openmanus__{stem}"
+
+
+async def _owui_sync_one(stem: str, owui_url: str, api_key: str) -> tuple:
+    import httpx as _hx
+    try:
+        from app.tool.base import BaseTool as _BT
+    except Exception as e:
+        return False, f"Cannot import BaseTool: {e}"
+    mod_name = f"_owui_sync.{stem}"
+    sys.modules.pop(mod_name, None)
+    py_file = USER_TOOLS_DIR / f"{stem}.py"
+    if not py_file.exists():
+        return False, "File not found"
+    try:
+        spec = importlib.util.spec_from_file_location(mod_name, py_file)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        tools_info = [
+            {"name": getattr(obj(), "name", obj.__name__),
+             "description": getattr(obj(), "description", ""),
+             "parameters": getattr(obj(), "parameters", {})}
+            for attr in dir(mod)
+            for obj in [getattr(mod, attr)]
+            if isinstance(obj, type) and issubclass(obj, _BT)
+            and obj is not _BT and obj.__module__ == mod_name
+        ]
+    except Exception as e:
+        return False, f"Import error: {e}"
+    if not tools_info:
+        return False, "No BaseTool subclass found"
+    code = generate_owui_tool_code(stem, tools_info)
+    tool_id = _owui_tool_id(stem)
+    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    async with _hx.AsyncClient(timeout=15) as c:
+        exists = (await c.get(f"{owui_url}/api/v1/tools/{tool_id}", headers=hdrs)).status_code == 200
+        payload = {
+            "id": tool_id,
+            "name": (tools_info[0]["description"] or stem)[:50],
+            "content": code,
+            "meta": {"description": tools_info[0]["description"], "manifest": {}},
+        }
+        url = f"{owui_url}/api/v1/tools/{tool_id}/update" if exists else f"{owui_url}/api/v1/tools/create"
+        r = await c.post(url, headers=hdrs, json=payload)
+        if r.status_code < 300:
+            return True, "Synced"
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+
+
+async def _owui_delete_one(stem: str, owui_url: str, api_key: str) -> tuple:
+    import httpx as _hx
+    hdrs = {"Authorization": f"Bearer {api_key}"}
+    async with _hx.AsyncClient(timeout=10) as c:
+        r = await c.delete(f"{owui_url}/api/v1/tools/{_owui_tool_id(stem)}/delete", headers=hdrs)
+        return r.status_code in (200, 204, 404), f"HTTP {r.status_code}"
+
+
+async def _owui_install_fn(fn_id: str, fn_name: str, code: str, owui_url: str, api_key: str) -> tuple:
+    import httpx as _hx
+    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"id": fn_id, "name": fn_name, "content": code,
+               "meta": {"description": fn_name, "manifest": {}}}
+    async with _hx.AsyncClient(timeout=15) as c:
+        exists = (await c.get(f"{owui_url}/api/v1/functions/{fn_id}", headers=hdrs)).status_code == 200
+        url = f"{owui_url}/api/v1/functions/{fn_id}/update" if exists else f"{owui_url}/api/v1/functions/create"
+        r = await c.post(url, headers=hdrs, json=payload)
+        if r.status_code < 300:
+            return True, "Installed"
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
 
 # Patch the Manus system prompt at import time so the agent knows about the
 # shared noVNC browser environment the user can see at vnc.designflow.app
@@ -523,14 +661,35 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #1e1e2e; color: #cdd6f4; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-    header { padding: 10px 16px; background: #181825; border-bottom: 1px solid #313244; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-    header h1 { font-size: 15px; font-weight: 600; }
-    header span { color: #a6adc8; font-size: 12px; }
-    .auto-note { margin-left: auto; font-size: 11px; background: #313244; border-radius: 4px; padding: 3px 8px; color: #a6e3a1; }
-    .fn-link { font-size: 11px; background: #45475a; border-radius: 4px; padding: 3px 8px; color: #cba6f7; text-decoration: none; white-space: nowrap; }
-    .fn-link:hover { background: #585b70; }
-    .main { display: flex; flex: 1; overflow: hidden; }
+    /* Header */
+    header { padding: 8px 14px; background: #181825; border-bottom: 1px solid #313244; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    header h1 { font-size: 15px; font-weight: 600; white-space: nowrap; }
+    .owui-badge { font-size: 11px; border-radius: 4px; padding: 3px 8px; white-space: nowrap; }
+    .owui-connected { background: #1e3a2f; color: #a6e3a1; border: 1px solid #2d5a3d; }
+    .owui-disconnected { background: #3a1e1e; color: #f38ba8; border: 1px solid #5a2d2d; }
+    .owui-unknown { background: #313244; color: #a6adc8; border: 1px solid #45475a; }
+    .header-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .hdr-btn { font-size: 11px; background: #313244; border: 1px solid #45475a; border-radius: 4px; padding: 4px 10px; color: #cdd6f4; cursor: pointer; white-space: nowrap; }
+    .hdr-btn:hover { background: #45475a; }
+    /* Settings panel */
+    .settings-panel { background: #12121c; border-bottom: 2px solid #313244; flex-shrink: 0; padding: 14px 18px; display: none; }
+    .settings-panel.open { display: block; }
+    .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .settings-section-title { font-size: 12px; font-weight: 600; color: #89b4fa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .05em; }
+    .settings-field { margin-bottom: 8px; }
+    .settings-field label { display: block; font-size: 11px; color: #a6adc8; margin-bottom: 4px; }
+    .settings-input { width: 100%; padding: 5px 8px; background: #1e1e2e; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 12px; outline: none; }
+    .settings-input:focus { border-color: #89b4fa; }
+    .settings-row-btns { display: flex; gap: 8px; margin-top: 8px; }
+    .settings-msg { font-size: 11px; margin-top: 6px; min-height: 16px; }
+    .settings-msg.ok  { color: #a6e3a1; }
+    .settings-msg.err { color: #f38ba8; }
+    .fn-install-list { display: flex; flex-direction: column; gap: 6px; }
+    .fn-install-row { display: flex; align-items: center; gap: 8px; }
+    .fn-install-name { font-size: 12px; flex: 1; color: #cdd6f4; }
+    .fn-status { font-size: 11px; color: #a6adc8; }
     /* Sidebar */
+    .main { display: flex; flex: 1; overflow: hidden; }
     .sidebar { width: 210px; background: #181825; border-right: 1px solid #313244; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-header { padding: 8px; border-bottom: 1px solid #313244; }
     .new-btn { width: 100%; padding: 6px; background: #89b4fa; color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px; }
@@ -539,8 +698,12 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     .tool-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #313244; font-size: 13px; }
     .tool-item:hover { background: #313244; }
     .tool-item.active { background: #45475a; }
-    .tool-item-filename { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-item-row { display: flex; align-items: baseline; gap: 4px; }
+    .tool-item-filename { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
     .tool-item.active .tool-item-filename { color: #89b4fa; }
+    .sync-icon { font-size: 10px; flex-shrink: 0; }
+    .sync-icon.synced { color: #a6e3a1; }
+    .sync-icon.unsynced { color: #585b70; }
     .tool-item-meta { font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #a6adc8; }
     .tool-item-meta.ok  { color: #a6e3a1; }
     .tool-item-meta.err { color: #f38ba8; }
@@ -559,6 +722,8 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     .btn-upload:hover { background: #b4befe; }
     .btn-run    { background: #fab387; color: #1e1e2e; }
     .btn-run:hover    { background: #f9e2af; }
+    .btn-install { background: #45475a; color: #cdd6f4; font-size: 12px; padding: 4px 10px; }
+    .btn-install:hover { background: #585b70; }
     .btn:disabled { opacity: 0.4; cursor: default; }
     .cm-editor-wrap { flex: 1; overflow: hidden; min-height: 0; }
     .CodeMirror { height: 100%; font-size: 13px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
@@ -585,11 +750,50 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
 <body>
   <header>
     <h1>OpenManus Tool Manager</h1>
-    <span>Write or upload a <code>.py</code> file — saved tools are injected into every chat automatically.</span>
-    <span class="auto-note">✓ auto-loaded in every chat</span>
-    <a class="fn-link" href="/admin/functions/run_tool.py" target="_blank" title="Download and paste into OpenWebUI Admin → Functions to add a Run Tool picker button on AI messages">⬇ Run Tool function</a>
-    <a class="fn-link" href="/admin/functions/save_to_knowledge.py" target="_blank" title="Download and paste into OpenWebUI Admin → Functions to add a Save-to-Knowledge button on AI messages">⬇ Save-to-Knowledge function</a>
+    <span id="owuiBadge" class="owui-badge owui-unknown">◌ Checking…</span>
+    <div class="header-right">
+      <button class="hdr-btn" onclick="toggleSettings()">⚙ Settings</button>
+      <button class="hdr-btn" id="syncAllBtn" onclick="syncAllTools()" style="display:none">↻ Sync All</button>
+    </div>
   </header>
+
+  <div class="settings-panel" id="settingsPanel">
+    <div class="settings-grid">
+      <div>
+        <div class="settings-section-title">OpenWebUI Connection</div>
+        <div class="settings-field">
+          <label>OpenWebUI URL (internal)</label>
+          <input id="owuiUrl" class="settings-input" type="text" placeholder="http://open-webui:8080" />
+        </div>
+        <div class="settings-field">
+          <label>API Key — generate in OpenWebUI: <em>Settings → Account → API Keys</em></label>
+          <input id="owuiKey" class="settings-input" type="password" placeholder="sk-… (leave blank to keep existing)" />
+        </div>
+        <div class="settings-row-btns">
+          <button class="btn btn-save" onclick="saveSettings()">Save</button>
+          <button class="btn" style="background:#74c7ec;color:#1e1e2e" onclick="testConnection()">Test Connection</button>
+        </div>
+        <div class="settings-msg" id="settingsMsg"></div>
+      </div>
+      <div>
+        <div class="settings-section-title">Install Functions into OpenWebUI</div>
+        <p style="font-size:11px;color:#a6adc8;margin-bottom:10px">One-click install — no copy-paste needed. Adds action buttons to AI messages in chat.</p>
+        <div class="fn-install-list">
+          <div class="fn-install-row">
+            <span class="fn-install-name">▶ Run Tool — manually invoke any tool from a chat message</span>
+            <button class="btn btn-install" id="installRunTool" onclick="installFunction('run_tool')">Install</button>
+            <span class="fn-status" id="statusRunTool"></span>
+          </div>
+          <div class="fn-install-row">
+            <span class="fn-install-name">💾 Save to Knowledge — save a chat summary to the knowledge base</span>
+            <button class="btn btn-install" id="installSaveKnowledge" onclick="installFunction('save_to_knowledge')">Install</button>
+            <span class="fn-status" id="statusSaveKnowledge"></span>
+          </div>
+        </div>
+        <div class="settings-msg" id="installMsg"></div>
+      </div>
+    </div>
+  </div>
   <div class="main">
     <div class="sidebar">
       <div class="sidebar-header">
@@ -656,6 +860,8 @@ class MyCustomTool(BaseTool):
 
     // All status data keyed by filename stem
     let statusMap = {};
+    let owuiConnected = false;
+    let syncedTools = new Set();
 
     const cm = CodeMirror.fromTextArea(document.getElementById('editor'), {
       mode: 'python',
@@ -707,10 +913,23 @@ class MyCustomTool(BaseTool):
         div.className = 'tool-item' + (s.file === active ? ' active' : '');
         div.onclick = () => openTool(s.file);
 
+        const rowEl = document.createElement('div');
+        rowEl.className = 'tool-item-row';
+
         const nameEl = document.createElement('div');
         nameEl.className = 'tool-item-filename';
         nameEl.textContent = s.file + '.py';
-        div.appendChild(nameEl);
+        rowEl.appendChild(nameEl);
+
+        if (owuiConnected) {
+          const syncEl = document.createElement('span');
+          const isSynced = syncedTools.has(s.file);
+          syncEl.className = 'sync-icon ' + (isSynced ? 'synced' : 'unsynced');
+          syncEl.title = isSynced ? 'Synced to OpenWebUI' : 'Not yet synced to OpenWebUI';
+          syncEl.textContent = isSynced ? '☁' : '○';
+          rowEl.appendChild(syncEl);
+        }
+        div.appendChild(rowEl);
 
         const metaEl = document.createElement('div');
         if (s.error) {
@@ -724,14 +943,117 @@ class MyCustomTool(BaseTool):
         } else {
           metaEl.className = 'tool-item-meta warn';
           metaEl.textContent = '⚠ no BaseTool subclass found';
-          div.title = 'File loaded OK but no class extending BaseTool was detected. Check class definition and imports.';
+          div.title = 'File loaded OK but no class extending BaseTool was detected.';
         }
         div.appendChild(metaEl);
         list.appendChild(div);
       });
 
-      // Refresh invoke panel for currently open tool
       updateInvokePanel(active);
+    }
+
+    async function loadSettings() {
+      try {
+        const r = await fetch('/api/owui/settings');
+        const s = await r.json();
+        document.getElementById('owuiUrl').value = s.owui_url || 'http://open-webui:8080';
+        if (s.has_api_key) {
+          document.getElementById('owuiKey').placeholder = 'sk-… (key set — leave blank to keep)';
+        }
+        owuiConnected = s.connected || false;
+        syncedTools = new Set(s.synced_tools || []);
+        updateOwuiBadge();
+      } catch(e) {
+        console.error('loadSettings:', e);
+      }
+    }
+
+    function updateOwuiBadge() {
+      const badge = document.getElementById('owuiBadge');
+      const syncBtn = document.getElementById('syncAllBtn');
+      if (owuiConnected) {
+        badge.className = 'owui-badge owui-connected';
+        badge.textContent = '☁ Connected to OpenWebUI — enable tools via ⚡ in chat';
+        syncBtn.style.display = '';
+      } else {
+        badge.className = 'owui-badge owui-disconnected';
+        badge.textContent = '⚠ Not connected — all tools auto-loaded in every chat';
+        syncBtn.style.display = 'none';
+      }
+    }
+
+    function toggleSettings() {
+      const p = document.getElementById('settingsPanel');
+      p.classList.toggle('open');
+    }
+
+    async function saveSettings() {
+      const url = document.getElementById('owuiUrl').value.trim();
+      const key = document.getElementById('owuiKey').value.trim();
+      const msg = document.getElementById('settingsMsg');
+      msg.textContent = 'Saving…'; msg.className = 'settings-msg';
+      const body = { owui_url: url };
+      if (key) body.api_key = key;
+      try {
+        const r = await fetch('/api/owui/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        if (r.ok) {
+          msg.textContent = '✓ Saved'; msg.className = 'settings-msg ok';
+          if (key) document.getElementById('owuiKey').value = '';
+          await loadSettings();
+          await loadTools();
+        } else {
+          msg.textContent = '✗ Save failed'; msg.className = 'settings-msg err';
+        }
+      } catch(e) { msg.textContent = '✗ ' + e.message; msg.className = 'settings-msg err'; }
+    }
+
+    async function testConnection() {
+      const url = document.getElementById('owuiUrl').value.trim();
+      const key = document.getElementById('owuiKey').value.trim();
+      const msg = document.getElementById('settingsMsg');
+      msg.textContent = 'Testing…'; msg.className = 'settings-msg';
+      try {
+        const body = { owui_url: url };
+        if (key) body.api_key = key;
+        const r = await fetch('/api/owui/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const d = await r.json();
+        msg.textContent = d.ok ? ('✓ ' + d.message) : ('✗ ' + d.message);
+        msg.className = 'settings-msg ' + (d.ok ? 'ok' : 'err');
+        if (d.ok) { owuiConnected = true; updateOwuiBadge(); }
+      } catch(e) { msg.textContent = '✗ ' + e.message; msg.className = 'settings-msg err'; }
+    }
+
+    async function syncAllTools() {
+      const badge = document.getElementById('owuiBadge');
+      badge.textContent = '↻ Syncing…';
+      try {
+        const r = await fetch('/api/owui/sync-all', { method: 'POST' });
+        const d = await r.json();
+        const results = d.results || {};
+        const ok = Object.values(results).filter(v => v.ok).length;
+        const fail = Object.values(results).length - ok;
+        setStatus(`Synced ${ok} tool(s) to OpenWebUI${fail ? ', ' + fail + ' failed' : ''}.`, fail ? 'err' : 'ok');
+        await loadSettings();
+        await loadTools();
+      } catch(e) { setStatus('Sync failed: ' + e.message, 'err'); }
+    }
+
+    async function installFunction(id) {
+      const btn = document.getElementById(id === 'run_tool' ? 'installRunTool' : 'installSaveKnowledge');
+      const statusEl = document.getElementById(id === 'run_tool' ? 'statusRunTool' : 'statusSaveKnowledge');
+      const msg = document.getElementById('installMsg');
+      btn.disabled = true; statusEl.textContent = '↻';
+      try {
+        const r = await fetch('/api/owui/install/' + id, { method: 'POST' });
+        const d = await r.json();
+        statusEl.textContent = d.ok ? '✓' : '✗';
+        statusEl.style.color = d.ok ? '#a6e3a1' : '#f38ba8';
+        msg.textContent = d.ok ? ('✓ Installed: ' + id.replace('_', ' ')) : ('✗ ' + d.message);
+        msg.className = 'settings-msg ' + (d.ok ? 'ok' : 'err');
+      } catch(e) {
+        statusEl.textContent = '✗';
+        msg.textContent = '✗ ' + e.message; msg.className = 'settings-msg err';
+      } finally { btn.disabled = false; }
     }
 
     function updateInvokePanel(filename) {
@@ -862,7 +1184,12 @@ class MyCustomTool(BaseTool):
       });
       const data = await r.json();
       if (r.ok) {
-        setStatus('Saved: ' + name + '.py', 'ok');
+        let msg = 'Saved: ' + name + '.py';
+        if (data.owui_sync) {
+          msg += data.owui_sync.ok ? ' — ☁ synced to OpenWebUI' : ' — ⚠ OWUI sync failed: ' + data.owui_sync.message;
+          if (data.owui_sync.ok) syncedTools.add(name);
+        }
+        setStatus(msg, data.owui_sync && !data.owui_sync.ok ? 'err' : 'ok');
         document.getElementById('deleteBtn').disabled = false;
         await loadTools();
       } else {
@@ -894,7 +1221,7 @@ class MyCustomTool(BaseTool):
       if (e.key === 'Enter') saveTool();
     });
 
-    loadTools();
+    loadSettings().then(() => loadTools());
   </script>
 </body>
 </html>
@@ -1039,9 +1366,19 @@ async def save_tool(name: str, request: Request):
     if not code.strip():
         raise HTTPException(status_code=400, detail="Code cannot be empty")
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    path = USER_TOOLS_DIR / f"{name}.py"
-    path.write_text(code)
-    return {"saved": True, "name": name}
+    (USER_TOOLS_DIR / f"{name}.py").write_text(code)
+    s = get_settings()
+    sync_result = None
+    if s.get("api_key"):
+        ok, msg = await _owui_sync_one(name, s.get("owui_url", "http://open-webui:8080"), s["api_key"])
+        if ok:
+            synced = s.get("synced_tools", [])
+            if name not in synced:
+                synced.append(name)
+            s["synced_tools"] = synced
+            write_settings(s)
+        sync_result = {"ok": ok, "message": msg}
+    return {"saved": True, "name": name, "owui_sync": sync_result}
 
 
 @app.delete("/api/tools/{name}")
@@ -1052,7 +1389,105 @@ async def delete_tool(name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Tool not found")
     path.unlink()
+    s = get_settings()
+    if s.get("api_key"):
+        await _owui_delete_one(name, s.get("owui_url", "http://open-webui:8080"), s["api_key"])
+        s["synced_tools"] = [t for t in s.get("synced_tools", []) if t != name]
+        write_settings(s)
     return {"deleted": True, "name": name}
+
+
+# ---------------------------------------------------------------------------
+# OpenWebUI integration endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/owui/settings")
+async def owui_get_settings():
+    s = get_settings()
+    owui_url = s.get("owui_url", "http://open-webui:8080")
+    api_key = s.get("api_key", "")
+    connected = False
+    if api_key:
+        try:
+            import httpx as _hx
+            async with _hx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{owui_url}/api/v1/tools/",
+                                headers={"Authorization": f"Bearer {api_key}"})
+                connected = r.status_code == 200
+        except Exception:
+            pass
+    return {"owui_url": owui_url, "has_api_key": bool(api_key),
+            "connected": connected, "synced_tools": s.get("synced_tools", [])}
+
+
+@app.post("/api/owui/settings")
+async def owui_save_settings(request: Request):
+    body = await request.json()
+    s = get_settings()
+    if "owui_url" in body:
+        s["owui_url"] = body["owui_url"].rstrip("/")
+    if body.get("api_key"):
+        s["api_key"] = body["api_key"]
+    write_settings(s)
+    return {"saved": True}
+
+
+@app.post("/api/owui/test")
+async def owui_test(request: Request):
+    body = await request.json()
+    s = get_settings()
+    owui_url = body.get("owui_url", s.get("owui_url", "http://open-webui:8080")).rstrip("/")
+    api_key = body.get("api_key") or s.get("api_key", "")
+    if not api_key:
+        return {"ok": False, "message": "No API key — enter one and save first"}
+    import httpx as _hx
+    try:
+        async with _hx.AsyncClient(timeout=10) as c:
+            r = await c.get(f"{owui_url}/api/v1/tools/",
+                            headers={"Authorization": f"Bearer {api_key}"})
+            if r.status_code == 200:
+                return {"ok": True, "message": f"Connected — {len(r.json())} tool(s) registered in OpenWebUI"}
+            return {"ok": False, "message": f"HTTP {r.status_code}: {r.text[:120]}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/owui/sync-all")
+async def owui_sync_all():
+    s = get_settings()
+    owui_url = s.get("owui_url", "http://open-webui:8080")
+    api_key = s.get("api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenWebUI API key not configured")
+    USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    results, synced = {}, []
+    for py_file in sorted(USER_TOOLS_DIR.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+        ok, msg = await _owui_sync_one(py_file.stem, owui_url, api_key)
+        results[py_file.stem] = {"ok": ok, "message": msg}
+        if ok:
+            synced.append(py_file.stem)
+    s["synced_tools"] = synced
+    write_settings(s)
+    return {"results": results}
+
+
+@app.post("/api/owui/install/{func_id}")
+async def owui_install_function(func_id: str):
+    s = get_settings()
+    owui_url = s.get("owui_url", "http://open-webui:8080")
+    api_key = s.get("api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenWebUI API key not configured")
+    if func_id == "run_tool":
+        ok, msg = await _owui_install_fn("run_tool", "Run Tool", RUN_TOOL_FUNCTION, owui_url, api_key)
+    elif func_id == "save_to_knowledge":
+        ok, msg = await _owui_install_fn("save_to_knowledge", "Save to Knowledge",
+                                          SAVE_TO_KNOWLEDGE_FUNCTION, owui_url, api_key)
+    else:
+        raise HTTPException(status_code=404, detail="Unknown function")
+    return {"ok": ok, "message": msg}
 
 
 # ---------------------------------------------------------------------------
@@ -1145,8 +1580,16 @@ async def chat_completions(request: Request):
         if prior_messages:
             agent.messages = prior_messages
 
-        # Inject any user-defined tools from /app/user_tools/
-        user_tools = load_user_tools()
+        # Inject user tools. When OpenWebUI sends a `tools` array (user selected specific tools
+        # via the ⚡ tool selector in chat), only inject those. Otherwise inject all — backwards
+        # compat for when OpenWebUI integration is not configured.
+        _owui_selected = {
+            t.get("function", {}).get("name", "")
+            for t in (body.get("tools") or [])
+            if isinstance(t, dict) and t.get("type") == "function"
+        }
+        all_user_tools = load_user_tools()
+        user_tools = [t for t in all_user_tools if t.name in _owui_selected] if _owui_selected else all_user_tools
         for tool in user_tools:
             try:
                 agent.available_tools.add_tool(tool)

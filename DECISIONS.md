@@ -84,3 +84,36 @@ Update [`entrypoint.sh`](entrypoint.sh) to run `python server.py` instead of `py
 **Risk**: CDP connection timing — if Chromium hasn't started in the noVNC container when the agent tries to connect, it will fail. Mitigation: add retry logic or a health check wait. Also, `browser-use` library's CDP support needs verification — it uses Playwright's `cdp_url` parameter which is well-documented.
 
 **Requires**: Docker image rebuild (for `playwright install-deps`), updated `config.toml`, updated `docker-compose.yaml`, new `novnc-startup.sh` script. Full plan in [`implementation_plan.md`](implementation_plan.md).
+
+---
+
+## Decision 2026-04-18-006: Post-deploy smoke check for critical routes
+
+**Context**: On 2026-04-18, the "Open Tool Manager" route at `https://manus.designflow.app/admin/tools` returned 502 Bad Gateway. Root cause was a stale Traefik dynamic config file at `/data/coolify/proxy/dynamic/tool-manager.yaml` that intercepted `/admin/*` and `/api/tools` and routed them to a dead upstream (`http://10.0.4.5:8000`). The stale config was external to this repo — no code change could have prevented it — but the outage went undetected because there was no automated verification after deployment.
+
+**Decision**: Add a `smoke-check` job to [`.github/workflows/build-deploy.yml`](.github/workflows/build-deploy.yml:62) that runs after the `build-and-push` job succeeds. It waits 90s for Coolify to pull the new image and restart containers, then curls three critical routes through the public internet (same path as users, through the same Traefik proxy):
+
+- `/admin/tools` — the Tool Manager UI (the route that broke)
+- `/api/tools` — the Tool Manager API (also intercepted by the stale config)
+- `/` — the Open WebUI homepage (baseline sanity check)
+
+Each route is retried up to 5 times with 15s delays. If any route fails to return 2xx after all retries, the job fails with a GitHub Actions `::error::` annotation, making the failure visible in the Actions UI and any connected notifications.
+
+**Rationale**: This is the smallest solid repo-based safeguard because:
+- It catches stale proxy overrides immediately after deployment, before users discover them
+- It creates a visible audit trail in GitHub Actions (red ❌ on the workflow run)
+- It requires no server-side changes, no new infrastructure, and no new secrets
+- It cannot be bypassed by external runtime state — it checks from the outside, exactly as a user would
+- The retry logic handles normal deployment rollouts where containers take time to start
+
+**Alternatives considered**:
+- **Traefik dynamic config validation on the server** — rejected: requires SSH access in CI (security risk), and the stale config is outside this repo's control
+- **Health check endpoint in the app** — rejected: the app was healthy; the proxy was the problem. An internal health check would have passed.
+- **Coolify API polling for deployment status** — rejected: Coolify reports deployment success even when proxy routes are broken (the container started fine)
+- **Scheduled uptime monitor (e.g., UptimeRobot)** — rejected: out of scope for this repo; that's an operational tool, not a repo-based safeguard. Could be added separately.
+
+**Limitations**:
+- The 90s settle time is a best guess; very slow deployments may not be caught on the first attempt (but retries help)
+- The smoke check only runs after pushes to main; it won't catch stale configs introduced between deployments
+- It does not prevent stale configs from being created; it only detects the symptom (non-2xx responses)
+- If `SMOKE_BASE_URL` is wrong or DNS is misconfigured, the check will false-positive fail

@@ -8,6 +8,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  SMOKE_BASE_URL: https://manus.designflow.app
 
 jobs:
   build-and-push:
@@ -58,3 +59,50 @@ jobs:
             exit 1
           fi
           echo "Deploy triggered successfully (HTTP $status)"
+
+  # Post-deploy smoke check — catches stale Traefik proxy overrides and broken routes.
+  # Origin: 2026-04-18 incident where a stale dynamic config at
+  #   /data/coolify/proxy/dynamic/tool-manager.yaml routed /admin/* to a dead
+  #   upstream, causing 502 Bad Gateway on /admin/tools with no CI signal.
+  smoke-check:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Coolify deployment to settle
+        run: |
+          echo "Waiting 90s for Coolify to pull image and restart containers..."
+          sleep 90
+
+      - name: Smoke check critical routes
+        run: |
+          PATHS=("/admin/tools" "/api/tools" "/")
+          MAX_RETRIES=5
+          RETRY_DELAY=15
+          FAILED=0
+
+          for path in "${PATHS[@]}"; do
+            url="${SMOKE_BASE_URL}${path}"
+            success=0
+            for i in $(seq 1 $MAX_RETRIES); do
+              status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+              if [[ "$status" =~ ^2 ]]; then
+                echo "✅ $url → HTTP $status (attempt $i/$MAX_RETRIES)"
+                success=1
+                break
+              else
+                echo "❌ $url → HTTP $status (attempt $i/$MAX_RETRIES), retrying in ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+              fi
+            done
+            if [ $success -eq 0 ]; then
+              echo "FAILED: $url did not return 2xx after $MAX_RETRIES attempts"
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            echo "::error::Smoke check failed — one or more routes returned non-2xx. Possible stale proxy config or deployment issue."
+            exit 1
+          fi
+
+          echo "All smoke checks passed ✅"

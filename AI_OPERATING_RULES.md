@@ -35,7 +35,7 @@ Do not propose alternate routine deployment methods.
 AI may help with:
 
 - editing application code
-- editing `docker-compose.yml`
+- editing `docker-compose.yaml`
 - editing Dockerfiles
 - editing GitHub Actions workflows
 - editing documentation

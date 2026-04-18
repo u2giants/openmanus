@@ -1044,9 +1044,14 @@ class MyCustomTool(BaseTool):
         const r = await fetch('/api/owui/sync-all', { method: 'POST' });
         const d = await r.json();
         const results = d.results || {};
-        const ok = Object.values(results).filter(v => v.ok).length;
-        const fail = Object.values(results).length - ok;
-        setStatus(`Synced ${ok} tool(s) to OpenWebUI${fail ? ', ' + fail + ' failed' : ''}.`, fail ? 'err' : 'ok');
+        const entries = Object.entries(results);
+        const ok = entries.filter(([,v]) => v.ok).length;
+        const failures = entries.filter(([,v]) => !v.ok);
+        let msg = `Synced ${ok} tool(s) to OpenWebUI`;
+        if (failures.length) {
+          msg += ' — ' + failures.map(([name, v]) => `${name}: ${v.message}`).join('; ');
+        }
+        setStatus(msg, failures.length ? 'err' : 'ok');
         await loadSettings();
         await loadTools();
       } catch(e) { setStatus('Sync failed: ' + e.message, 'err'); }

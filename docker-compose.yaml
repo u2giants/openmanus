@@ -21,6 +21,7 @@ services:
 
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'
+    pull_policy: always
     restart: unless-stopped
     environment:
       - 'OPENAI_API_BASE_URL=http://openmanus-backend:8000/v1'
@@ -55,6 +56,7 @@ services:
 
   novnc:
     image: lscr.io/linuxserver/webtop:ubuntu-mate
+    pull_policy: always
     restart: unless-stopped
     environment:
       - PUID=1000

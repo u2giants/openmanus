@@ -54,6 +54,7 @@ AI must not:
 - introduce additional branches
 - create a second deployment system
 - recommend storing production runtime configuration only in ad hoc server files
+- create Traefik dynamic config files or reverse-proxy overrides on the production server without committing them to the repo
 
 ## Secrets rule
 
@@ -63,7 +64,7 @@ AI must not:
 
 ## Compose rule
 
-- The repo copy of `docker-compose.yml` is authoritative
+- The repo copy of `docker-compose.yaml` is authoritative
 - If a service exists, it should be declared in the repo
 - Do not assume server-side Compose changes are valid unless they are committed
 

@@ -66,7 +66,7 @@ Update [`entrypoint.sh`](entrypoint.sh) to run `python server.py` instead of `py
 
 **Context**: User asked OpenManus to browse fidelity.com and got `RetryError[NotFoundError]`. Investigation revealed that while upstream OpenManus already includes [`BrowserUseTool`](https://github.com/FoundationAgents/OpenManus/blob/main/app/tool/browser_use_tool.py) (Playwright + browser-use library) wired into the [`Manus`](https://github.com/FoundationAgents/OpenManus/blob/main/app/agent/manus.py) agent, it fails because: (1) no Chromium binary is installed in the Docker image (`playwright install chromium` never runs), (2) no display server exists in the backend container for non-headless mode, and (3) no `[browser]` config section exists in [`config.toml`](config.toml).
 
-**Decision**: Run Chromium inside the existing noVNC/webtop container (`lscr.io/linuxserver/webtop:ubuntu-mate`) with Chrome DevTools Protocol (CDP) enabled on port 9222. Configure OpenManus `BrowserUseTool` to connect via `cdp_url = "http://novnc:9222"` in the `[browser]` section of [`config.toml`](config.toml). Install only Playwright system dependencies (`playwright install-deps`) in the backend container — no browser binary needed since we connect remotely.
+**Decision**: Run Chromium inside the existing noVNC/webtop container (`lscr.io/linuxserver/webtop:ubuntu-mate`) with Chrome DevTools Protocol (CDP) enabled on port 9222. Configure OpenManus `BrowserUseTool` to connect via `cdp_url = "http://novnc:9223"` in the `[browser]` section of [`config.toml`](config.toml). Install only Playwright system dependencies (`playwright install-deps`) in the backend container — no browser binary needed since we connect remotely.
 
 **Rationale**: This approach satisfies all user requirements simultaneously:
 - **Shared visibility**: User sees the browser live in noVNC at `vnc.designflow.app`
@@ -91,42 +91,28 @@ Update [`entrypoint.sh`](entrypoint.sh) to run `python server.py` instead of `py
 
 **Context**: On 2026-04-18, the "Open Tool Manager" route at `https://manus.designflow.app/admin/tools` returned 502 Bad Gateway. Root cause was a stale Traefik dynamic config file at `/data/coolify/proxy/dynamic/tool-manager.yaml` that intercepted `/admin/*` and `/api/tools` and routed them to a dead upstream (`http://10.0.4.5:8000`). The stale config was external to this repo — no code change could have prevented it — but the outage went undetected because there was no automated verification after deployment.
 
-**Decision**: Add a `smoke-check` job to [`.github/workflows/build-deploy.yml`](.github/workflows/build-deploy.yml:62) that runs after the `build-and-push` job succeeds. It waits 90s for Coolify to pull the new image and restart containers, then curls three critical routes through the public internet (same path as users, through the same Traefik proxy):
+**Decision**: Add a `smoke-check` job to [`.github/workflows/build-deploy.yml`](.github/workflows/build-deploy.yml:62) that runs after the `build-and-push` job succeeds. It waits 150s for Coolify to pull the new image and restart containers, then curls three critical routes through the public internet (same path as users, through the same Traefik proxy). Each route is retried up to 8 times with 20s delays.
 
-- `/admin/tools` — the Tool Manager UI (the route that broke)
-- `/api/tools` — the Tool Manager API (also intercepted by the stale config)
-- `/` — the Open WebUI homepage (baseline sanity check)
-
-Each route is retried up to 5 times with 15s delays. If any route fails to return 2xx after all retries, the job fails with a GitHub Actions `::error::` annotation, making the failure visible in the Actions UI and any connected notifications.
-
-**Rationale**: This is the smallest solid repo-based safeguard because:
-- It catches stale proxy overrides immediately after deployment, before users discover them
-- It creates a visible audit trail in GitHub Actions (red ❌ on the workflow run)
-- It requires no server-side changes, no new infrastructure, and no new secrets
-- It cannot be bypassed by external runtime state — it checks from the outside, exactly as a user would
-- The retry logic handles normal deployment rollouts where containers take time to start
-
-**Alternatives considered**:
-- **Traefik dynamic config validation on the server** — rejected: requires SSH access in CI (security risk), and the stale config is outside this repo's control
-- **Health check endpoint in the app** — rejected: the app was healthy; the proxy was the problem. An internal health check would have passed.
-- **Coolify API polling for deployment status** — rejected: Coolify reports deployment success even when proxy routes are broken (the container started fine)
-- **Scheduled uptime monitor (e.g., UptimeRobot)** — rejected: out of scope for this repo; that's an operational tool, not a repo-based safeguard. Could be added separately.
+**Rationale**: Catches stale proxy overrides immediately after deployment, creates a visible audit trail in GitHub Actions, and requires no server-side changes or new secrets.
 
 **Limitations**:
-- The 90s settle time is a best guess; very slow deployments may not be caught on the first attempt (but retries help)
-- The smoke check only runs after pushes to main; it won't catch stale configs introduced between deployments
-- It does not prevent stale configs from being created; it only detects the symptom (non-2xx responses)
-- If `SMOKE_BASE_URL` is wrong or DNS is misconfigured, the check will false-positive fail
+- A smoke check failure does **not** take down the site — Docker's `restart: unless-stopped` controls uptime, not CI.
+- Only catches failures on post-push deploys, not stale configs introduced between deployments.
 
 ---
 
-## Decision 2026-04-18-007: Add pull_policy: always to all services
+## Decision 2026-04-18-007: pull_policy per service — always for backend, if_not_present for others
 
-**Context**: Coolify's docker-compose up -d reuses locally cached images by default when the tag (:main) already exists. This caused 3 days of builds to never be deployed — the container restarted with stale code.
+**Context**: Initially `pull_policy: always` was added to all services to prevent stale image caching. But this caused open-webui (90+ second startup) and novnc to be fully restarted on every openmanus-backend-only deploy, causing unnecessary outages.
 
-**Decision**: Add `pull_policy: always` to all 3 services in docker-compose.yaml (openmanus-backend, open-webui, novnc).
+**Decision**: 
+- `openmanus-backend`: `pull_policy: always` — this is our image, always fetch the latest on deploy
+- `open-webui`: `pull_policy: if_not_present` — third-party image, does not change on our pushes
+- `novnc`: `pull_policy: if_not_present` — third-party image, does not change on our pushes
 
-**Rationale**: Ensures every redeploy pulls the latest image. Small latency trade-off vs. silently serving stale code.
+**Rationale**: With `if_not_present`, Docker only pulls the image on first run or after manual removal. Since these images use fixed tags (`:main`, `ubuntu-mate`), they don't auto-update — but we never need them to update on every deploy.
+
+**Trade-off**: If you want to upgrade open-webui or novnc to a newer image version, you must either change the image tag in docker-compose.yaml or manually remove the image on the host and trigger a deploy.
 
 ---
 
@@ -165,3 +151,58 @@ Each route is retried up to 5 times with 15s delays. If any route fails to retur
 **Decision**: Embed the Tool Manager as a single-page HTML app in server.py (TOOL_MANAGER_HTML constant), served at /admin/tools. API endpoints at /api/tools/* handle CRUD and invocation. Tools are stored in /app/user_tools/ (persisted via Docker volume) and auto-loaded into every agent request.
 
 **Rationale**: No build step, no extra container, no frontend framework. Pure HTML/JS with CodeMirror for syntax highlighting.
+
+---
+
+## Decision 2026-04-18-012: Traefik exact Path match for /admin/tools, not PathPrefix
+
+**Context**: The original Traefik routing rule used `PathPrefix('/admin/')` to route requests to openmanus-backend. This silently hijacked all of OpenWebUI's own admin routes (`/admin/users`, `/admin/settings`, `/admin/functions`, etc.) — those paths were sent to the backend and returned 404 instead of reaching OpenWebUI. The OpenWebUI admin panel appeared to work (it loaded) but all API calls behind "Save" buttons returned 404, causing silent save failures.
+
+**Decision**: Change the Traefik rule from `PathPrefix('/admin/')` to `Path('/admin/tools')` (exact match). The full rule is:
+
+```
+Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`))
+```
+
+**Rationale**: Only `/admin/tools` belongs to the Tool Manager. All other `/admin/*` paths are OpenWebUI's. An exact match is the safest possible scope. This is the kind of bug that's invisible in testing because the Tool Manager page itself loads fine — you only discover it when you try to use the OpenWebUI admin panel.
+
+**Warning for future developers**: Do not use `PathPrefix('/admin/')` in any Traefik rule that routes to openmanus-backend. OpenWebUI's own admin API uses this prefix extensively.
+
+---
+
+## Decision 2026-04-18-013: No Docker healthcheck on openmanus-backend
+
+**Context**: Coolify silently promotes `depends_on: service` to `depends_on: service: condition: service_healthy` whenever the dependency service has a Docker `HEALTHCHECK`. When a healthcheck was added to openmanus-backend and open-webui was configured to `depends_on` it, Coolify silently added `condition: service_healthy`. The healthcheck used `curl` (not present in the image), causing it to always fail. This prevented open-webui from ever starting.
+
+**Decision**: Remove the Docker `HEALTHCHECK` from openmanus-backend entirely. The `/health` HTTP endpoint in `server.py` remains, but is not wired to Docker's health mechanism.
+
+**Rationale**: The healthcheck → Coolify promotion → service_healthy dependency chain is a trap. The backend's `/health` endpoint is useful for external uptime monitoring but must not participate in Docker's startup dependency resolution. If you want to use `/health` for monitoring, use an external tool (UptimeRobot, Coolify's monitoring UI, etc.).
+
+---
+
+## Decision 2026-04-18-014: OpenWebUI sync uses browser session JWT, not stored API key
+
+**Context**: The Tool Manager "Sync to OpenWebUI" feature originally stored an OpenWebUI API key in `/app/user_tools/.settings.json` and used it for all OWUI API calls. This required the user to manually generate an API key in OpenWebUI settings, copy it, and paste it into the Tool Manager settings panel. The API key storage was plaintext on disk.
+
+**Decision**: Remove API key storage. The sync endpoints now read the session JWT from the user's browser cookie (`token` cookie, set by OpenWebUI on login) and pass it as `Authorization: Bearer <token>` to OpenWebUI's API. Helper function signature: `_session_token(request: Request) -> str` reads `request.cookies.get("token", "")`.
+
+**Rationale**: The Tool Manager is served from `manus.designflow.app`, the same domain as OpenWebUI. The browser already has a valid session cookie. Using it directly eliminates the need for API key management, works immediately after the user logs in, and requires no additional configuration.
+
+**Implication for developers**: All five `/api/owui/*` endpoints require the request object to extract the token. If the user is not logged in (no cookie), the sync returns HTTP 401. The settings panel no longer has an API key field — any `.settings.json` files with a leftover `api_key` field are harmless but ignored.
+
+---
+
+## Decision 2026-04-18-015: OpenWebUI 0.8.x /id/ prefix required for per-resource API routes
+
+**Context**: The OWUI sync was returning HTTP 405 "Method Not Allowed" when trying to update existing tools. Root cause: OpenWebUI 0.8.x changed its per-resource API routes to require an `/id/` prefix. The paths `/api/v1/tools/{id}` (GET) and `/api/v1/tools/{id}/update` (POST) do NOT work — they hit the SPA router which returns 200 HTML for GET (making existence checks always return true) and 405 for POST.
+
+**Decision**: Use the `/id/` prefix for all per-resource OpenWebUI API calls:
+- `GET /api/v1/tools/id/{id}` — check existence
+- `POST /api/v1/tools/id/{id}/update` — update existing tool
+- `DELETE /api/v1/tools/id/{id}/delete` — delete tool
+- `GET /api/v1/functions/id/{fn_id}` — check function existence
+- `POST /api/v1/functions/id/{fn_id}/update` — update existing function
+
+Create and list endpoints do NOT use `/id/`: `POST /api/v1/tools/create`, `GET /api/v1/tools/`.
+
+**Warning for future developers**: This is not documented in the OpenWebUI source in an obvious place. If you see sync calls returning 405 or existence checks always returning true, check for missing `/id/` prefix. This was verified against OpenWebUI 0.8.12.

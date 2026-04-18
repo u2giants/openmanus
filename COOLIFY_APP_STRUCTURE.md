@@ -4,67 +4,52 @@ How the OpenManus stack is organized on the Coolify server, and how the deployme
 
 ---
 
+## Stack Identity
+
+| Field | Value |
+|-------|-------|
+| Coolify service UUID | `e10kwzww46ljhrgz1qj08j6a` |
+| Coolify API base | `http://178.156.180.212:8000/api/v1` |
+| Stack type | **Service** (Docker Compose) — not "Application" |
+| GHCR image | `ghcr.io/u2giants/openmanus:main` |
+
+**Service vs Application type**: Coolify has two resource types — "Application" (single container, Nixpacks/Dockerfile build) and "Service" (Docker Compose, multi-container). The OpenManus stack is a Service. In the past, a stale "Application" entry existed in Coolify alongside the real Service; this caused confusion (3 red entries + 1 green). The Application entry was deleted — only the Service entry should exist.
+
+---
+
 ## Directory Layout
 
 ```
-/worksp/<app-name>/
-├── app/                          # git clone of the source repo
-│   ├── Dockerfile
-│   ├── server.py
-│   ├── entrypoint.sh
-│   ├── config.toml
-│   ├── novnc-startup.sh
-│   ├── cdp_proxy.py
-│   ├── docker-compose.yaml
-│   └── ...
-└── server -> /data/coolify/applications/<coolify-app-id>   # symlink
+/worksp/openmanus/
+└── app/                          # git clone of the source repo (source of truth)
+    ├── Dockerfile
+    ├── server.py
+    ├── entrypoint.sh
+    ├── config.toml
+    ├── novnc-startup.sh
+    ├── cdp_proxy.py
+    ├── docker-compose.yaml
+    └── ...
 
 /data/coolify/
-├── services/<uuid>/               # Coolify service deployment config
-│   └── docker-compose.yml         # The compose file Coolify actually runs
-├── applications/<uuid>/            # Coolify application source files
-│   └── ...                        # Symlinked from /worksp/<app-name>/server
+├── services/e10kwzww46ljhrgz1qj08j6a/   # Coolify's working copy of the compose stack
+│   ├── docker-compose.yml               # The compose file Coolify actually executes (NOT the repo copy)
+│   ├── novnc-startup.sh                 # Synced from the repo at deploy time
+│   └── cdp_proxy.py                     # Synced from the repo at deploy time
 └── proxy/
-    └── dynamic/                    # Traefik dynamic config (can cause stale routes)
+    └── dynamic/                          # Traefik dynamic config — can cause stale routes if files linger here
 ```
 
 ---
 
-## Key Paths Explained
+## Critical: Coolify Deploys from its DB, Not from GitHub
 
-### `/worksp/<app-name>/app/`
+Coolify stores its own copy of the compose file in its database. When a deploy is triggered, Coolify reads from its DB — **not** from the GitHub repo and not from `/data/coolify/services/<uuid>/docker-compose.yml` directly.
 
-This is the **git clone** of the repository. It contains the source of truth for all code, Dockerfiles, and compose files. When you push to `main`, GitHub Actions builds from this repo and pushes the image to GHCR.
-
-### `/worksp/<app-name>/server`
-
-A **symlink** to `/data/coolify/applications/<coolify-app-id>`. This is Coolify's view of the application. Coolify reads configuration from this path.
-
-### `/data/coolify/services/<uuid>/`
-
-Coolify's **service deployment directory**. The `docker-compose.yml` that Coolify actually executes lives here. This is NOT the same as the `docker-compose.yaml` in the git repo — Coolify may modify it (e.g., adding labels, adjusting networks).
-
-### `/data/coolify/applications/<uuid>/`
-
-Coolify's **application source directory**. Linked from `/worksp/<app-name>/server`. Coolify uses this path for application-level configuration and metadata.
-
----
-
-## How to Find the Coolify App ID
-
-1. **Via the Coolify UI**: Navigate to the project → the application → look at the URL. It contains the UUID, e.g., `https://coolify.example.com/project/xxx/application/<uuid>`.
-
-2. **Via the server filesystem**: Look at the symlink target:
-   ```bash
-   ls -la /worksp/<app-name>/server
-   # Output: /worksp/<app-name>/server -> /data/coolify/applications/<uuid>
-   ```
-   The `<uuid>` at the end is the Coolify application ID.
-
-3. **Via the Coolify API**: Use the deploy webhook URL — the `uuid` parameter is the application ID:
-   ```
-   http://<server>:8000/api/v1/deploy?uuid=<coolify-app-id>&force=true
-   ```
+This means:
+- If you change `docker-compose.yaml` in the repo and just trigger a Coolify deploy (without syncing the compose), Coolify deploys the old compose.
+- The CI workflow handles this with a PATCH step: it base64-encodes the repo's `docker-compose.yaml` and PATCHes it into Coolify's DB before triggering the deploy.
+- If you ever trigger a Coolify deploy manually (via the UI or API) without going through CI, your compose changes will **not** be picked up.
 
 ---
 
@@ -78,23 +63,65 @@ volumes:
   - ./cdp_proxy.py:/custom-cont-init.d/cdp_proxy.py:ro
 ```
 
-**Important**: These relative paths resolve relative to the **Coolify service directory** (`/data/coolify/services/<uuid>/`), NOT the git repo directory. Coolify copies the files from the application path to the service path during deployment.
+These relative paths resolve relative to the **Coolify service directory** (`/data/coolify/services/e10kwzww46ljhrgz1qj08j6a/`), not the git repo. Coolify copies the files from the repo to the service directory during deployment.
 
 If the files are missing from the service directory, Docker will create **directories** at the mount points instead of files, causing the scripts to fail silently. See [TROUBLESHOOTING.md — Volume Mounts Created as Directories](TROUBLESHOOTING.md) for the fix.
 
-### Verifying Mount Files Exist
+---
 
-```bash
-# Check the service directory for the mounted files
-ls -la /data/coolify/services/<uuid>/novnc-startup.sh
-ls -la /data/coolify/services/<uuid>/cdp_proxy.py
+## Traefik Dynamic Config Warning
+
+Files in `/data/coolify/proxy/dynamic/` are loaded by Traefik as live routing rules and **override** the container-label-based routing. Stale files here can cause routes to go to dead upstreams even when the containers are healthy.
+
+On 2026-04-18 a file `tool-manager.yaml` in this directory routed `/admin/*` to a dead IP, causing `/admin/tools` to return 502 while the container was running fine. The CI smoke check now catches this.
+
+**If you add any file to this directory manually, document it in this file and in the repo.** Never create undocumented dynamic configs on the server.
+
+---
+
+## Coolify's Automatic `depends_on` Promotion
+
+When a service has a Docker `HEALTHCHECK` and another service `depends_on` it, Coolify silently rewrites:
+
+```yaml
+depends_on:
+  - openmanus-backend
 ```
 
-If these are missing, the Coolify deployment may not have copied them. You can manually copy from the app directory:
+to:
 
-```bash
-cp /worksp/<app-name>/app/novnc-startup.sh /data/coolify/services/<uuid>/novnc-startup.sh
-cp /worksp/<app-name>/app/cdp_proxy.py /data/coolify/services/<uuid>/cdp_proxy.py
+```yaml
+depends_on:
+  openmanus-backend:
+    condition: service_healthy
 ```
 
-Then redeploy via Coolify or `docker compose up -d` in the service directory.
+This means: if the healthcheck is failing (even during startup), the dependent service never starts. The openmanus-backend has **no Docker healthcheck** specifically to avoid this. Do not add one. The `/health` HTTP endpoint in `server.py` exists for external monitoring only.
+
+---
+
+## Environment Variables
+
+Runtime secrets are stored in Coolify's UI (not in this repo). The compose references them via `${VAR_NAME}` syntax. Current env vars:
+
+| Variable | Set in | Notes |
+|----------|--------|-------|
+| `OPENAI_API_KEY` | Coolify | Used by OpenManus agent |
+| `OPENROUTER_API_KEY` | Coolify | Primary LLM provider |
+| `DAYTONA_API_KEY` | Coolify | Reserved for Daytona sandbox (not yet active) |
+| `OPENAI_API_BASE_URL` | Coolify | Defaults to `https://openrouter.ai/api/v1` |
+| `GOOGLE_CLIENT_ID` | Coolify | Google OAuth for Open WebUI |
+| `GOOGLE_CLIENT_SECRET` | Coolify | Google OAuth for Open WebUI |
+
+---
+
+## Persistent Volumes
+
+| Volume | Mount | Purpose |
+|--------|-------|---------|
+| `open-webui-data` (named) | `/app/backend/data` in open-webui | OpenWebUI SQLite DB, user accounts, settings |
+| `novnc-data` (named) | `/config` in novnc | MATE desktop config, Chromium profile |
+| `/data/coolify/openmanus/user_tools` (bind) | `/app/user_tools` in backend | User-defined Python tools (persisted across redeploys) |
+| `/mnt/tailscale/souls` (bind) | `/app/custom_souls` in backend | Custom agent soul definitions (from Tailscale storage) |
+
+User tools survive redeploys because they're on a host bind mount, not the Docker image. The Docker image bakes in `custom_tools/` (separate from `user_tools/`).

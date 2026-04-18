@@ -22,11 +22,17 @@ These rules exist so AI tools can safely assist with this repo without creating 
 
 The only normal deployment path is:
 
-1. change files in this repo
-2. commit to `main`
-3. GitHub Actions builds and pushes the image
-4. GitHub Actions triggers Coolify
-5. Coolify deploys the new image
+1. Change files in this repo
+2. Commit to `main`
+3. GitHub Actions builds and pushes the Docker image to GHCR
+4. GitHub Actions PATCHes the Coolify DB with the new `docker-compose.yaml` (base64-encoded)
+5. GitHub Actions triggers Coolify deploy webhook
+6. Coolify deploys the new image
+
+**Critical**: Steps 4 and 5 are both required. Coolify deploys from its own internal database copy of the compose file, NOT from GitHub. If you trigger Coolify manually (step 5) without first syncing the compose (step 4), Coolify will deploy from its stale DB copy, ignoring any compose changes.
+
+**Coolify service UUID**: `e10kwzww46ljhrgz1qj08j6a`  
+**Coolify API base**: `http://178.156.180.212:8000/api/v1`
 
 Do not propose alternate routine deployment methods.
 
@@ -41,7 +47,7 @@ AI may help with:
 - editing documentation
 - recommending GitHub Secrets usage for CI/CD
 - recommending Coolify runtime environment variable changes
-- triggering deployment through the approved GitHub -> Coolify path
+- triggering deployment through the approved GitHub → Coolify path
 
 ## Forbidden AI actions
 
@@ -67,6 +73,13 @@ AI must not:
 - The repo copy of `docker-compose.yaml` is authoritative
 - If a service exists, it should be declared in the repo
 - Do not assume server-side Compose changes are valid unless they are committed
+- After changing `docker-compose.yaml`, the CI workflow automatically syncs it to Coolify's DB — do not manually update Coolify's compose through the UI
+
+## Coolify-specific warnings
+
+**Do not add Docker `HEALTHCHECK` instructions** to `Dockerfile` or `docker-compose.yaml` services that other services `depends_on`. Coolify silently converts `depends_on: service` to `depends_on: service: condition: service_healthy` whenever the dependency has a healthcheck. If the healthcheck fails during startup (even briefly), the dependent service never starts. The backend's `/health` endpoint exists for external monitoring only — do not wire it to a Docker healthcheck.
+
+**Do not add `pull_policy: always` to `open-webui` or `novnc`**. These images do not change on our pushes. Always-pulling them forces a full container restart (90+ second outage) every deploy. Only `openmanus-backend` should have `pull_policy: always`.
 
 ## Change discipline
 

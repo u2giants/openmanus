@@ -4,17 +4,19 @@ Operational runbook for the OpenManus stack deployed via Coolify.
 
 ---
 
-## Bad Gateway on /admin/tools
+## /admin/tools Returns 404 or 502
 
-**Symptom**: `https://manus.designflow.app/admin/tools` returns 502 Bad Gateway.
+**Symptom**: `https://manus.designflow.app/admin/tools` returns 404 Not Found or 502 Bad Gateway.
 
-**Root cause**: Stale Traefik dynamic proxy config intercepting `/admin/*` and routing to a dead upstream.
+### Cause A: Stale Traefik dynamic config (502)
+
+A stale file in `/data/coolify/proxy/dynamic/` is intercepting the route and sending it to a dead upstream.
 
 **Fix**:
 1. SSH to the server and check for stale dynamic configs:
    ```bash
    ls /data/coolify/proxy/dynamic/
-   cat /data/coolify/proxy/dynamic/tool-manager.yaml
+   cat /data/coolify/proxy/dynamic/tool-manager.yaml  # if it exists
    ```
 2. If the file routes `/admin/*` or `/api/tools` to an old/dead IP, delete it:
    ```bash
@@ -24,9 +26,124 @@ Operational runbook for the OpenManus stack deployed via Coolify.
    ```bash
    curl -sS -o /dev/null -w "%{http_code}" https://manus.designflow.app/admin/tools
    ```
-4. Expected: `200`
+   Expected: `200`
 
-**Prevention**: The CI smoke check job (in [`.github/workflows/build-deploy.yml`](.github/workflows/build-deploy.yml)) now curls `/admin/tools` and `/api/tools` after every deployment. If a stale proxy config reappears, the check will fail with a visible error in GitHub Actions.
+### Cause B: Wrong Traefik rule in docker-compose.yaml (404)
+
+If the Traefik label uses `PathPrefix('/admin/')` instead of `Path('/admin/tools')`, the openmanus-backend router takes priority but the backend only handles `/admin/tools` — all other `/admin/*` paths return 404 from the backend, AND OpenWebUI's own admin panel breaks silently (see below).
+
+**The correct rule** in `docker-compose.yaml`:
+```yaml
+- "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`))"
+```
+
+### Cause C: Coolify deployed from stale DB compose (404 or route missing)
+
+If you changed `docker-compose.yaml` but triggered Coolify manually (without a CI run), Coolify deployed from its stale DB copy and the route change wasn't picked up.
+
+**Fix**: Push to `main` to trigger a full CI run, which syncs the compose to Coolify's DB before deploying.
+
+**Prevention**: The CI smoke check job now curls `/admin/tools` after every deployment. If a stale proxy config reappears or the route is missing, the check will fail with a visible error in GitHub Actions.
+
+---
+
+## OpenWebUI Admin Panel Save Buttons Don't Work
+
+**Symptom**: In the OpenWebUI admin panel (`/admin/settings`, `/admin/users`, etc.), clicking "Save" shows a spinner for a split-second and then nothing happens. The dialog stays open.
+
+**Root cause**: A Traefik rule using `PathPrefix('/admin/')` to route to openmanus-backend is intercepting OpenWebUI's admin API calls and returning 404. The page loads fine (OpenWebUI's SPA is served by the catch-all rule), but all admin API POST calls go to the backend.
+
+**Fix**: Ensure the openmanus-backend Traefik rule uses `Path('/admin/tools')` (exact match), not `PathPrefix('/admin/')`. See the correct rule above.
+
+---
+
+## open-webui Goes Down on Every Deploy
+
+**Symptom**: Every push to `main` causes `https://manus.designflow.app` to be unavailable for 90+ seconds.
+
+**Root cause**: `pull_policy: always` on `open-webui` forces a full image pull + container restart on every deploy, even though the open-webui image doesn't change on our pushes.
+
+**Fix**: Set `pull_policy: if_not_present` on `open-webui` and `novnc` in `docker-compose.yaml`:
+```yaml
+open-webui:
+  pull_policy: if_not_present
+novnc:
+  pull_policy: if_not_present
+```
+
+Only `openmanus-backend` should have `pull_policy: always`.
+
+**To upgrade open-webui or novnc to a newer version**: Change the image tag in docker-compose.yaml (or remove the existing image on the host and trigger a deploy).
+
+---
+
+## Do Not Add Docker Healthchecks
+
+**Symptom**: After adding a `HEALTHCHECK` to `openmanus-backend` and deploying, `open-webui` never starts.
+
+**Root cause**: Coolify silently converts `depends_on: openmanus-backend` to `depends_on: openmanus-backend: condition: service_healthy` whenever the dependency has a Docker healthcheck. If the healthcheck fails (including `curl` not being in the image), `open-webui` waits indefinitely and never starts.
+
+**Do not add a Docker `HEALTHCHECK` to any service that other services depend on.** The `/health` endpoint in `server.py` is for external uptime monitoring only. Use UptimeRobot, Coolify's monitoring UI, or the CI smoke check instead.
+
+---
+
+## OpenWebUI Tool Sync Returns 405 or Synced 0 Tools
+
+**Symptom**: Clicking "↻ Sync All" in the Tool Manager shows "Synced 0 tool(s) to OpenWebUI" or a tool name followed by "HTTP 405: Method Not Allowed".
+
+### Cause A: Not logged in (no session cookie)
+
+The sync uses your browser's OpenWebUI session JWT. If you're not logged into OpenWebUI, there's no token.
+
+**Fix**: Log into `https://manus.designflow.app`, then try syncing again from the same browser session.
+
+### Cause B: Wrong OpenWebUI API paths (missing /id/ prefix)
+
+OpenWebUI 0.8.x requires `/id/` in per-resource API paths. Without it, GET requests hit the SPA and return 200 HTML (making existence checks always true), and POST requests return 405.
+
+**This should already be fixed in the current `server.py`** — all three helper functions (`_owui_sync_one`, `_owui_delete_one`, `_owui_install_fn`) use the `/id/` prefix. If you see 405 errors again after a code change, verify that paths in these helpers still include `/id/`.
+
+Correct paths for OpenWebUI 0.8.x:
+- Existence check: `GET /api/v1/tools/id/{id}`
+- Update: `POST /api/v1/tools/id/{id}/update`
+- Delete: `DELETE /api/v1/tools/id/{id}/delete`
+- Create (no `/id/`): `POST /api/v1/tools/create`
+
+### Cause C: OWUI URL misconfigured
+
+Check Settings → OWUI URL in the Tool Manager. Default is `http://open-webui:8080` (internal Docker network name). This must be reachable from the backend container.
+
+---
+
+## Coolify DB Drift — Compose Changes Not Deployed
+
+**Symptom**: You changed `docker-compose.yaml`, pushed to `main`, and the CI deploy succeeded — but the change (a new env var, Traefik rule, volume mount, etc.) isn't live.
+
+**Root cause**: Coolify deploys from its internal database copy of the compose file. If the CI workflow's "Sync compose to Coolify DB" step failed silently, Coolify deployed from the old copy.
+
+**Check**: Look at the CI run in GitHub Actions. The "Sync compose to Coolify DB" step should show `HTTP 200` or `HTTP 2xx`. If it shows an error status, the sync failed.
+
+**Manual fix**: You can manually PATCH the compose into Coolify's DB and trigger a deploy:
+```bash
+COMPOSE=$(base64 -w 0 docker-compose.yaml)
+curl -X PATCH \
+  -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"docker_compose_raw\": \"$COMPOSE\"}" \
+  "http://178.156.180.212:8000/api/v1/services/e10kwzww46ljhrgz1qj08j6a"
+```
+
+---
+
+## Stale Entries in Coolify Dashboard
+
+**Symptom**: Multiple entries for the openmanus stack appear in the Coolify UI, most showing red (stopped/failed). Only one should exist.
+
+**Root cause**: Coolify creates new service entries when the stack is re-imported or when an "Application" type was converted to a "Service" type, leaving orphan entries.
+
+**Fix**: Delete stale entries via the Coolify API (get their UUIDs from the Coolify UI URL and DELETE `/api/v1/services/{uuid}`). Keep only the entry with UUID `e10kwzww46ljhrgz1qj08j6a`.
+
+**Only the Service type** (`e10kwzww46ljhrgz1qj08j6a`) is correct. Do not create Application-type entries for this stack.
 
 ---
 
@@ -34,17 +151,12 @@ Operational runbook for the OpenManus stack deployed via Coolify.
 
 **Symptom**: Code changes pushed to `main` and built successfully, but the running container still serves old code.
 
-**Root cause**: By default, `docker-compose up -d` reuses locally cached images when the tag (`:main`) already exists. Coolify's redeploy was restarting the container with the old image.
+**Root cause**: `pull_policy: always` is missing on `openmanus-backend`. Without it, `docker compose up -d` reuses the locally cached image.
 
-**Fix**: Verify `pull_policy: always` is set on all services in [`docker-compose.yaml`](docker-compose.yaml):
+**Fix**: Verify `pull_policy: always` is set on `openmanus-backend` in [`docker-compose.yaml`](docker-compose.yaml):
 ```yaml
-services:
-  openmanus-backend:
-    pull_policy: always
-  open-webui:
-    pull_policy: always
-  novnc:
-    pull_policy: always
+openmanus-backend:
+  pull_policy: always
 ```
 
 **Verification**: After a deploy, check the image digest on the server:
@@ -163,19 +275,22 @@ The `custom-cont-init.d` script can **create** the `.desktop` file, but should n
 
 ---
 
-## Container Health Checks
+## Coolify Healthcheck Warning
 
-| Service | Health Check | Notes |
-|---------|-------------|-------|
-| `open-webui` | Built-in Docker `HEALTHCHECK` | Checks `/api/health` endpoint |
-| `openmanus-backend` | None | Relies on `restart: unless-stopped` policy |
-| `novnc` | None | Relies on `restart: unless-stopped` policy |
+**Symptom**: Coolify UI shows a warning: "No health check configured. The resource may be functioning normally..."
 
-The backend exposes a `/health` endpoint (defined in [`server.py`](server.py)) but does not have a Docker `HEALTHCHECK` instruction. To check manually:
+**This is expected and safe to ignore.** No Docker healthchecks are configured on any service — intentionally, because Coolify silently converts `depends_on` to `condition: service_healthy` when a healthcheck is present, which prevents dependent services from starting. See [Do Not Add Docker Healthchecks](#do-not-add-docker-healthchecks) above.
 
+---
+
+## Container Health Checks (Manual)
+
+The backend exposes a `/health` endpoint for external monitoring:
 ```bash
 curl -s http://localhost:8001/health
 ```
+
+No Docker `HEALTHCHECK` instruction exists on any service — intentional. See above.
 
 ---
 
@@ -207,43 +322,38 @@ docker system df
 
 ## How to Verify CDP Is Working
 
-From inside the novnc container, check that Chromium's CDP debugger is responding:
-
+From inside the novnc container:
 ```bash
 docker exec novnc curl -s http://127.0.0.1:9222/json/version
 ```
 
-Expected output (example):
+Expected output:
 ```json
 {
   "Browser": "Chromium/130.0.6723.69",
   "Protocol-Version": "1.3",
-  "User-Agent": "...",
-  "V8-Version": "13.0.245.14",
-  "WebKit-Version": "537.36",
   "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/..."
 }
 ```
 
-If this returns nothing or `Connection refused`, Chromium is not running or CDP is not enabled. Check:
-1. Chromium process exists: `docker exec novnc ps aux | grep chromium`
-2. MATE autostart `.desktop` file exists: `docker exec novnc cat /config/.config/autostart/chromium.desktop`
-3. X server is running: `docker exec novnc ps aux | grep X`
+If this returns nothing or `Connection refused`:
+1. Chromium process: `docker exec novnc ps aux | grep chromium`
+2. MATE autostart file: `docker exec novnc cat /config/.config/autostart/chromium.desktop`
+3. X server running: `docker exec novnc ps aux | grep X`
 
 ---
 
 ## How to Verify CDP Proxy Is Working
 
-From the backend container, check that the CDP proxy is forwarding requests correctly:
-
+From the backend container:
 ```bash
 docker exec openmanus-backend curl -s http://novnc:9223/json/version
 ```
 
-Expected: Same JSON as the direct CDP check above, but with `webSocketDebuggerUrl` rewritten to use `novnc:9224` instead of `127.0.0.1:9222`.
+Expected: Same JSON as the direct CDP check above, but with `webSocketDebuggerUrl` rewritten to use `novnc:9224`.
 
 If this fails:
-1. Check the CDP proxy process: `docker exec novnc ps aux | grep cdp_proxy`
-2. Check the proxy is listening: `docker exec novnc ss -tlnp | grep -E '9223|9224'`
-3. Check that direct CDP works first (see [How to Verify CDP Is Working](#how-to-verify-cdp-is-working))
-4. Check that `novnc-startup.sh` started the proxy (look for `Starting CDP proxy...` in container logs)
+1. Check the proxy process: `docker exec novnc ps aux | grep cdp_proxy`
+2. Check ports listening: `docker exec novnc ss -tlnp | grep -E '9223|9224'`
+3. Check direct CDP works first (see above)
+4. Look for `Starting CDP proxy...` in container logs: `docker logs novnc | grep -i cdp`

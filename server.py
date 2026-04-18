@@ -761,19 +761,28 @@ TOOL_MANAGER_HTML = """<!DOCTYPE html>
     <div class="settings-grid">
       <div>
         <div class="settings-section-title">OpenWebUI Connection</div>
-        <div class="settings-field">
-          <label>OpenWebUI URL (internal)</label>
-          <input id="owuiUrl" class="settings-input" type="text" placeholder="http://open-webui:8080" />
-        </div>
-        <div class="settings-field">
-          <label>API Key — generate in OpenWebUI: <em>Settings → Account → API Keys</em></label>
-          <input id="owuiKey" class="settings-input" type="password" placeholder="sk-… (leave blank to keep existing)" />
-        </div>
+        <p style="font-size:11px;color:#a6adc8;margin-bottom:10px">Auto-connect uses your existing login session — no API key needed.</p>
         <div class="settings-row-btns">
-          <button class="btn btn-save" onclick="saveSettings()">Save</button>
-          <button class="btn" style="background:#74c7ec;color:#1e1e2e" onclick="testConnection()">Test Connection</button>
+          <button class="btn btn-save" style="background:#89b4fa" onclick="autoConnect()">⚡ Auto-connect</button>
+          <button class="btn" style="background:#74c7ec;color:#1e1e2e" onclick="testConnection()">Test</button>
         </div>
         <div class="settings-msg" id="settingsMsg"></div>
+        <details style="margin-top:10px">
+          <summary style="font-size:11px;color:#585b70;cursor:pointer">Manual API key (advanced)</summary>
+          <div style="margin-top:8px">
+            <div class="settings-field">
+              <label>OpenWebUI URL (internal)</label>
+              <input id="owuiUrl" class="settings-input" type="text" placeholder="http://open-webui:8080" />
+            </div>
+            <div class="settings-field">
+              <label>API Key</label>
+              <input id="owuiKey" class="settings-input" type="password" placeholder="sk-… (leave blank to keep existing)" />
+            </div>
+            <div class="settings-row-btns">
+              <button class="btn btn-save" onclick="saveSettings()">Save</button>
+            </div>
+          </div>
+        </details>
       </div>
       <div>
         <div class="settings-section-title">Install Functions into OpenWebUI</div>
@@ -985,6 +994,21 @@ class MyCustomTool(BaseTool):
     function toggleSettings() {
       const p = document.getElementById('settingsPanel');
       p.classList.toggle('open');
+    }
+
+    async function autoConnect() {
+      const msg = document.getElementById('settingsMsg');
+      msg.textContent = 'Connecting…'; msg.className = 'settings-msg';
+      try {
+        const r = await fetch('/api/owui/bootstrap', { method: 'POST' });
+        const d = await r.json();
+        msg.textContent = d.ok ? ('✓ ' + d.message) : ('✗ ' + d.message);
+        msg.className = 'settings-msg ' + (d.ok ? 'ok' : 'err');
+        if (d.ok) {
+          await loadSettings();
+          await syncAllTools();
+        }
+      } catch(e) { msg.textContent = '✗ ' + e.message; msg.className = 'settings-msg err'; }
     }
 
     async function saveSettings() {
@@ -1471,6 +1495,27 @@ async def owui_sync_all():
     s["synced_tools"] = synced
     write_settings(s)
     return {"results": results}
+
+
+@app.post("/api/owui/bootstrap")
+async def owui_bootstrap(request: Request):
+    """Auto-configure OWUI integration using the user's existing browser session cookie."""
+    token = request.cookies.get("token")
+    if not token:
+        return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged in to OpenWebUI first."}
+    s = get_settings()
+    owui_url = s.get("owui_url", "http://open-webui:8080")
+    import httpx as _hx
+    async with _hx.AsyncClient(timeout=10) as c:
+        r = await c.post(f"{owui_url}/api/v1/auths/api_key",
+                         headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 200:
+            api_key = r.json().get("api_key")
+            if api_key:
+                s["api_key"] = api_key
+                write_settings(s)
+                return {"ok": True, "message": "Connected — API key auto-generated from your session."}
+        return {"ok": False, "message": f"HTTP {r.status_code}: {r.text[:150]}"}
 
 
 @app.post("/api/owui/install/{func_id}")

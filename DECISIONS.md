@@ -117,3 +117,51 @@ Each route is retried up to 5 times with 15s delays. If any route fails to retur
 - The smoke check only runs after pushes to main; it won't catch stale configs introduced between deployments
 - It does not prevent stale configs from being created; it only detects the symptom (non-2xx responses)
 - If `SMOKE_BASE_URL` is wrong or DNS is misconfigured, the check will false-positive fail
+
+---
+
+## Decision 2026-04-18-007: Add pull_policy: always to all services
+
+**Context**: Coolify's docker-compose up -d reuses locally cached images by default when the tag (:main) already exists. This caused 3 days of builds to never be deployed — the container restarted with stale code.
+
+**Decision**: Add `pull_policy: always` to all 3 services in docker-compose.yaml (openmanus-backend, open-webui, novnc).
+
+**Rationale**: Ensures every redeploy pulls the latest image. Small latency trade-off vs. silently serving stale code.
+
+---
+
+## Decision 2026-04-18-008: CDP proxy for cross-container browser access
+
+**Context**: Chrome binds its CDP debugger to 127.0.0.1 regardless of --remote-debugging-address. Other containers cannot reach it directly.
+
+**Decision**: Create cdp_proxy.py — a hand-rolled HTTP+WS proxy listening on 0.0.0.0:9223 (HTTP) and 0.0.0.0:9224 (WS) inside the novnc container. It forwards requests to 127.0.0.1:9222 and rewrites response URLs so other containers connect via novnc:9224.
+
+**Rationale**: Minimal code for a narrow use case. A library would be overkill. The backend connects via BROWSER_CDP_URL=http://novnc:9223.
+
+---
+
+## Decision 2026-04-18-009: Chromium autostart via MATE .desktop file, not direct launch
+
+**Context**: novnc-startup.sh runs via LSIO's custom-cont-init.d mechanism, which executes BEFORE the X server starts. Direct Chromium launch (su -c 'DISPLAY=:1 chromium') fails with "Missing X server or $DISPLAY".
+
+**Decision**: Create a MATE autostart .desktop file in /config/.config/autostart/ instead of launching Chromium directly. The script waits for CDP to become available (up to 120s).
+
+**Rationale**: MATE autostart runs after the desktop is ready. This is the correct lifecycle for GUI apps in LSIO containers.
+
+---
+
+## Decision 2026-04-18-010: Rename branch master → main
+
+**Context**: AI_OPERATING_RULES.md specifies single branch `main` but the repo used `master`. The workflow triggered on both, creating ambiguity.
+
+**Decision**: Renamed GitHub branch from master to main. Updated workflow to branches: [main]. Updated Coolify app config git_branch to main.
+
+---
+
+## Decision 2026-04-18-011: Tool Manager UI embedded in server.py
+
+**Context**: Users need a way to create, edit, and test custom Python tools without SSH or file uploads.
+
+**Decision**: Embed the Tool Manager as a single-page HTML app in server.py (TOOL_MANAGER_HTML constant), served at /admin/tools. API endpoints at /api/tools/* handle CRUD and invocation. Tools are stored in /app/user_tools/ (persisted via Docker volume) and auto-loaded into every agent request.
+
+**Rationale**: No build step, no extra container, no frontend framework. Pure HTML/JS with CodeMirror for syntax highlighting.

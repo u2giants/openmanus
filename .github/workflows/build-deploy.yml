@@ -44,6 +44,25 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Sync compose to Coolify DB
+        env:
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          COMPOSE=$(base64 -w 0 docker-compose.yaml)
+          response=$(curl -s -w "\n%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"docker_compose_raw\": \"$COMPOSE\"}" \
+            "http://178.156.180.212:8000/api/v1/services/e10kwzww46ljhrgz1qj08j6a")
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+          echo "Coolify sync response: $body"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Compose sync failed with HTTP $status"
+            exit 1
+          fi
+          echo "Compose synced to Coolify DB (HTTP $status)"
+
       - name: Deploy via Coolify webhook
         env:
           COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}

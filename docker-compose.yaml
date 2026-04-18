@@ -18,6 +18,13 @@ services:
       - /mnt/tailscale/souls:/app/custom_souls
     depends_on:
       - novnc
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && PathPrefix(`/admin/`)
+      - traefik.http.routers.openmanus-admin.entrypoints=https
+      - traefik.http.routers.openmanus-admin.tls=true
+      - traefik.http.routers.openmanus-admin.tls.certresolver=letsencrypt
+      - traefik.http.services.openmanus-admin.loadbalancer.server.port=8000
 
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'

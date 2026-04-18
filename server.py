@@ -1500,22 +1500,31 @@ async def owui_sync_all():
 @app.post("/api/owui/bootstrap")
 async def owui_bootstrap(request: Request):
     """Auto-configure OWUI integration using the user's existing browser session cookie."""
-    token = request.cookies.get("token")
-    if not token:
-        return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged in to OpenWebUI first."}
-    s = get_settings()
-    owui_url = s.get("owui_url", "http://open-webui:8080")
-    import httpx as _hx
-    async with _hx.AsyncClient(timeout=10) as c:
-        r = await c.post(f"{owui_url}/api/v1/auths/api_key",
-                         headers={"Authorization": f"Bearer {token}"})
-        if r.status_code == 200:
-            api_key = r.json().get("api_key")
-            if api_key:
-                s["api_key"] = api_key
-                write_settings(s)
-                return {"ok": True, "message": "Connected — API key auto-generated from your session."}
-        return {"ok": False, "message": f"HTTP {r.status_code}: {r.text[:150]}"}
+    try:
+        token = request.cookies.get("token")
+        if not token:
+            return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged into OpenWebUI first."}
+        s = get_settings()
+        owui_url = s.get("owui_url", "http://open-webui:8080")
+        import httpx as _hx
+        hdrs = {"Authorization": f"Bearer {token}"}
+        async with _hx.AsyncClient(timeout=10) as c:
+            # Try GET first (some versions), then POST
+            for method in ("get", "post"):
+                r = await getattr(c, method)(f"{owui_url}/api/v1/auths/api_key", headers=hdrs)
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                    except Exception:
+                        continue
+                    api_key = data.get("api_key") or data.get("key")
+                    if api_key:
+                        s["api_key"] = api_key
+                        write_settings(s)
+                        return {"ok": True, "message": "Connected — API key auto-generated from your session."}
+            return {"ok": False, "message": f"Could not retrieve API key (last HTTP {r.status_code}). Response: {r.text[:200]}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Error: {e}"}
 
 
 @app.post("/api/owui/install/{func_id}")

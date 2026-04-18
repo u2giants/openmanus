@@ -1,8 +1,5 @@
 #!/bin/bash
-# Wait for desktop environment to be fully ready
-sleep 10
-
-# Add Chromium to MATE autostart
+# Add Chromium to MATE autostart (runs after desktop is ready)
 mkdir -p /config/.config/autostart
 cat > /config/.config/autostart/chromium.desktop << 'EOF'
 [Desktop Entry]
@@ -14,22 +11,9 @@ NoDisplay=false
 X-MATE-Autostart-enabled=true
 EOF
 
-# Launch Chromium for the current session
-su -c 'DISPLAY=:1 /usr/lib/chromium/chromium \
-  --no-first-run \
-  --no-default-browser-check \
-  --disable-gpu \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --proxy-server=socks5://10.0.4.1:1080 \
-  --remote-debugging-port=9222 \
-  --remote-allow-origins=* \
-  --user-data-dir=/config/chromium-profile \
-  &' abc
-
-# Wait until Chromium CDP is up
+# Wait until Chromium CDP is up (Chromium starts via autostart after X desktop)
 echo "Waiting for Chromium CDP..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   if curl -sf http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
     echo "Chromium CDP ready after $((i*2))s"
     break

@@ -20,7 +20,7 @@ How the OpenManus stack is organized on the Coolify server, and how the deployme
 ## Directory Layout
 
 ```
-/worksp/openmanus/
+
 └── app/                          # git clone of the source repo (source of truth)
     ├── Dockerfile
     ├── server.py

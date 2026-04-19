@@ -23,6 +23,30 @@ _pool = ThreadPoolExecutor(max_workers=1)
 
 _CDP_URL = os.environ.get("FIDELITY_CDP_URL", "http://novnc:9223")
 _DOWNLOADS_DIR = "/app/downloads/Fidelity"
+_RCLONE_CONFIG = "/app/rclone-config/rclone.conf"
+_GDRIVE_FOLDER = os.environ.get("GDRIVE_FOLDER", "OpenManus")
+
+
+def _gdrive_sync_if_configured() -> dict:
+    """If Google Drive is set up, sync /app/downloads to it. Silent if not configured."""
+    import subprocess
+    from pathlib import Path
+
+    config = Path(_RCLONE_CONFIG)
+    if not config.exists() or "refresh_token" not in config.read_text():
+        return {"gdrive_sync": "skipped (not configured)"}
+    try:
+        proc = subprocess.run(
+            ["rclone", "copy", "/app/downloads", f"gdrive:{_GDRIVE_FOLDER}",
+             "--config", _RCLONE_CONFIG, "--create-empty-src-dirs"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return {
+            "gdrive_sync": "ok" if proc.returncode == 0 else "failed",
+            "gdrive_returncode": proc.returncode,
+        }
+    except Exception as exc:
+        return {"gdrive_sync": f"error: {exc}"}
 
 
 def _run(fn) -> Any:
@@ -153,6 +177,7 @@ class FidelityDownloadStatements(BaseTool):
                 account_contains=account_contains.strip() or None,
             )
             fb.close()
+            result.update(_gdrive_sync_if_configured())
             return result
 
         try:
@@ -203,6 +228,7 @@ class FidelityDownloadPositions(BaseTool):
             fb.attach(cdp_url=cdp_url)
             result = fb.download_positions_csv(out_dir=out_dir)
             fb.close()
+            result.update(_gdrive_sync_if_configured())
             return result
 
         try:

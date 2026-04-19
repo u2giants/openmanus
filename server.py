@@ -1914,6 +1914,245 @@ async def downloads_browser(request: Request, subpath: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# Google Drive — OAuth setup + rclone sync
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess
+
+RCLONE_CONFIG_DIR = Path("/app/rclone-config")
+RCLONE_CONFIG_FILE = RCLONE_CONFIG_DIR / "rclone.conf"
+RCLONE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+_GDRIVE_REMOTE = "gdrive"
+_GDRIVE_REDIRECT = "https://manus.designflow.app/api/gdrive/callback"
+_GDRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+_GDRIVE_FOLDER = os.environ.get("GDRIVE_FOLDER", "OpenManus")
+
+
+def _gdrive_client_id() -> str:
+    return os.environ.get("GOOGLE_CLIENT_ID", "")
+
+
+def _gdrive_client_secret() -> str:
+    return os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+
+def _gdrive_configured() -> bool:
+    if not RCLONE_CONFIG_FILE.exists():
+        return False
+    content = RCLONE_CONFIG_FILE.read_text()
+    return "[gdrive]" in content and "refresh_token" in content
+
+
+def _rclone_available() -> bool:
+    return _subprocess.run(
+        ["rclone", "version"], capture_output=True
+    ).returncode == 0
+
+
+_GDRIVE_PAGE = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Google Drive</title>
+<style>
+  body{{font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 24px;color:#1a1a1a}}
+  h1{{font-size:1.4rem}}
+  .card{{border:1px solid #e5e7eb;border-radius:10px;padding:24px;margin:20px 0}}
+  .status{{display:flex;align-items:center;gap:10px;font-size:1rem;margin-bottom:16px}}
+  .dot{{width:12px;height:12px;border-radius:50%}}
+  .green{{background:#22c55e}} .red{{background:#ef4444}} .grey{{background:#9ca3af}}
+  .btn{{display:inline-block;padding:10px 20px;border-radius:6px;border:none;cursor:pointer;font-size:.95rem;text-decoration:none}}
+  .btn-primary{{background:#2563eb;color:#fff}}
+  .btn-secondary{{background:#f3f4f6;color:#374151;border:1px solid #d1d5db}}
+  .btn:hover{{opacity:.9}}
+  .note{{font-size:.85rem;color:#6b7280;margin-top:12px}}
+  .error{{background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:6px;color:#dc2626;font-size:.9rem}}
+  .success{{background:#f0fdf4;border:1px solid #bbf7d0;padding:12px;border-radius:6px;color:#16a34a;font-size:.9rem}}
+  code{{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:.85rem}}
+  .setup-steps{{font-size:.9rem;line-height:1.8;color:#374151}}
+  .setup-steps a{{color:#2563eb}}
+</style>
+</head>
+<body>
+<h1>Google Drive</h1>
+<div class="card">
+  <div class="status">
+    <div class="dot {dot_class}"></div>
+    <strong>{status_text}</strong>
+  </div>
+  {body}
+</div>
+{extra}
+</body>
+</html>"""
+
+
+@app.get("/admin/gdrive", response_class=HTMLResponse)
+async def gdrive_page():
+    client_id = _gdrive_client_id()
+    client_secret = _gdrive_client_secret()
+    rclone_ok = _rclone_available()
+    configured = _gdrive_configured()
+
+    if not rclone_ok:
+        return HTMLResponse(_GDRIVE_PAGE.format(
+            dot_class="red", status_text="rclone not installed",
+            body="<div class='error'>rclone is not installed in this container. Rebuild the Docker image to include it.</div>",
+            extra="",
+        ))
+
+    if not client_id or not client_secret:
+        return HTMLResponse(_GDRIVE_PAGE.format(
+            dot_class="grey", status_text="Not configured",
+            body="""
+<div class='setup-steps'>
+  <p>To connect Google Drive you need a Google OAuth client set up for Drive access.</p>
+  <ol>
+    <li>Go to <a href='https://console.cloud.google.com/apis/credentials' target='_blank'>Google Cloud Console → Credentials</a></li>
+    <li>Create or select an OAuth 2.0 Client ID (Web application)</li>
+    <li>Add <code>https://manus.designflow.app/api/gdrive/callback</code> as an Authorized redirect URI</li>
+    <li>Enable the <strong>Google Drive API</strong> in your project</li>
+    <li>Add <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> as environment variables in Coolify</li>
+    <li>Redeploy — then come back here to connect</li>
+  </ol>
+  <p class='note'>These are the same credentials already used for Google Sign-In to this app. You just need to also enable the Drive API and add the redirect URI.</p>
+</div>""",
+            extra="",
+        ))
+
+    if configured:
+        folder = _GDRIVE_FOLDER
+        return HTMLResponse(_GDRIVE_PAGE.format(
+            dot_class="green", status_text="Connected to Google Drive",
+            body=f"""
+<p>Downloads sync automatically to <strong>{folder}/</strong> in your Google Drive after every Fidelity download.</p>
+<a href='/api/gdrive/sync' class='btn btn-primary' style='margin-right:8px'>Sync now</a>
+<a href='/api/gdrive/disconnect' class='btn btn-secondary'>Disconnect</a>
+<p class='note'>Destination folder: My Drive / {folder}</p>""",
+            extra="",
+        ))
+
+    auth_url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={client_id}"
+        f"&redirect_uri={_GDRIVE_REDIRECT}"
+        "&response_type=code"
+        f"&scope={_GDRIVE_SCOPE}"
+        "&access_type=offline"
+        "&prompt=consent"
+    )
+    return HTMLResponse(_GDRIVE_PAGE.format(
+        dot_class="grey", status_text="Not connected",
+        body=f"""
+<p>Connect your Google Drive so Fidelity downloads save there automatically.</p>
+<a href='{auth_url}' class='btn btn-primary'>Connect Google Drive</a>
+<p class='note'>You'll be asked to sign in with Google and grant access to Google Drive.</p>""",
+        extra="",
+    ))
+
+
+@app.get("/api/gdrive/callback")
+async def gdrive_callback(code: str = "", error: str = ""):
+    if error:
+        return HTMLResponse(f"<h2>Error: {error}</h2><p><a href='/admin/gdrive'>Back</a></p>")
+    if not code:
+        return HTMLResponse("<h2>Missing code</h2><p><a href='/admin/gdrive'>Back</a></p>")
+
+    client_id = _gdrive_client_id()
+    client_secret = _gdrive_client_secret()
+
+    import httpx, json as _json
+    from datetime import datetime, timezone, timedelta
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": _GDRIVE_REDIRECT,
+            "grant_type": "authorization_code",
+        })
+
+    if resp.status_code != 200:
+        return HTMLResponse(f"<h2>Token exchange failed</h2><pre>{resp.text}</pre><p><a href='/admin/gdrive'>Back</a></p>")
+
+    tokens = resp.json()
+    expiry = (datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+    token_json = _json.dumps({
+        "access_token": tokens["access_token"],
+        "token_type": tokens.get("token_type", "Bearer"),
+        "refresh_token": tokens.get("refresh_token", ""),
+        "expiry": expiry,
+    })
+
+    RCLONE_CONFIG_FILE.write_text(
+        f"[gdrive]\n"
+        f"type = drive\n"
+        f"client_id = {client_id}\n"
+        f"client_secret = {client_secret}\n"
+        f"scope = drive\n"
+        f"token = {token_json}\n"
+    )
+
+    return HTMLResponse("""
+<html><head><meta charset='utf-8'>
+<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center}
+.check{font-size:3rem}.btn{display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;margin-top:16px}</style>
+</head><body>
+<div class='check'>✅</div>
+<h2>Google Drive connected!</h2>
+<p>Fidelity downloads will now sync to your Google Drive automatically.</p>
+<a href='/admin/gdrive' class='btn'>Back to Google Drive settings</a>
+</body></html>""")
+
+
+@app.get("/api/gdrive/status")
+async def gdrive_status():
+    return {
+        "configured": _gdrive_configured(),
+        "rclone_available": _rclone_available(),
+        "folder": _GDRIVE_FOLDER,
+        "client_id_set": bool(_gdrive_client_id()),
+    }
+
+
+@app.get("/api/gdrive/sync")
+async def gdrive_sync():
+    if not _gdrive_configured():
+        return HTMLResponse("<h2>Not connected</h2><p><a href='/admin/gdrive'>Set up Google Drive first</a></p>")
+    if not _rclone_available():
+        return JSONResponse({"ok": False, "error": "rclone not available"})
+
+    proc = _subprocess.run(
+        ["rclone", "copy", str(DOWNLOADS_DIR), f"{_GDRIVE_REMOTE}:{_GDRIVE_FOLDER}",
+         "--config", str(RCLONE_CONFIG_FILE), "--create-empty-src-dirs", "-v"],
+        capture_output=True, text=True, timeout=120,
+    )
+    ok = proc.returncode == 0
+    if "text/html" in (proc.stderr or ""):
+        return JSONResponse({"ok": ok, "stdout": proc.stdout[-3000:], "stderr": proc.stderr[-3000:]})
+    return HTMLResponse(f"""
+<html><head><meta charset='utf-8'>
+<style>body{{font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 24px}}
+pre{{background:#f3f4f6;padding:16px;border-radius:6px;overflow-x:auto;font-size:.85rem}}
+.btn{{display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none}}</style>
+</head><body>
+<h2>{'✅ Sync complete' if ok else '❌ Sync failed'}</h2>
+<pre>{proc.stdout or ''}{proc.stderr or ''}</pre>
+<a href='/admin/gdrive' class='btn'>Back</a>
+</body></html>""")
+
+
+@app.get("/api/gdrive/disconnect")
+async def gdrive_disconnect():
+    if RCLONE_CONFIG_FILE.exists():
+        RCLONE_CONFIG_FILE.unlink()
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/admin/gdrive")
+
+
+# ---------------------------------------------------------------------------
 # Core API
 # ---------------------------------------------------------------------------
 

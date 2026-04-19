@@ -22,12 +22,13 @@ services:
     volumes:
       - /data/coolify/openmanus/user_tools:/app/user_tools
       - /data/coolify/openmanus/downloads:/app/downloads
+      - /data/coolify/openmanus/rclone-config:/app/rclone-config
       - /mnt/tailscale/souls:/app/custom_souls
     depends_on:
       - novnc
     labels:
       - traefik.enable=true
-      - "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/admin/downloads`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`) || PathPrefix(`/api/clawdtalk`))"
+      - "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/admin/downloads`) || PathPrefix(`/admin/gdrive`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`) || PathPrefix(`/api/clawdtalk`) || PathPrefix(`/api/gdrive`))"
       - traefik.http.routers.openmanus-admin.entrypoints=https
       - traefik.http.routers.openmanus-admin.tls=true
       - traefik.http.routers.openmanus-admin.tls.certresolver=letsencrypt

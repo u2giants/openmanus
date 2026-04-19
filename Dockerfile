@@ -1,5 +1,10 @@
 FROM python:3.11-slim
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git curl unzip && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+    && unzip -q /tmp/rclone.zip -d /tmp/rclone \
+    && mv /tmp/rclone/rclone-*-linux-amd64/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone /tmp/rclone.zip
 WORKDIR /app
 RUN git clone https://github.com/FoundationAgents/OpenManus.git .
 COPY custom_tools/ ./custom_tools/

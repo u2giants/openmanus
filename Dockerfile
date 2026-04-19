@@ -4,6 +4,7 @@ WORKDIR /app
 RUN git clone https://github.com/FoundationAgents/OpenManus.git .
 COPY custom_tools/ ./custom_tools/
 COPY fidelity_mcp/ ./fidelity_mcp/
+COPY fidelity_browser_tool.py ./bundled_tools/fidelity_browser_tool.py
 COPY config.toml ./config/config.toml
 COPY entrypoint.sh ./entrypoint.sh
 COPY server.py ./server.py

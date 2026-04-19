@@ -22,6 +22,7 @@ from app.tool.base import BaseTool, ToolResult
 _pool = ThreadPoolExecutor(max_workers=1)
 
 _CDP_URL = os.environ.get("FIDELITY_CDP_URL", "http://novnc:9223")
+_DOWNLOADS_DIR = "/app/downloads/Fidelity"
 
 
 def _run(fn) -> Any:
@@ -116,7 +117,7 @@ class FidelityDownloadStatements(BaseTool):
             },
             "out_dir": {
                 "type": "string",
-                "description": "Directory path to save PDF files, e.g. './Statements/Fidelity'.",
+                "description": "Directory to save PDF files. Default saves to the Downloads folder accessible at manus.designflow.app/admin/downloads.",
             },
             "account_contains": {
                 "type": "string",
@@ -136,7 +137,7 @@ class FidelityDownloadStatements(BaseTool):
     async def execute(
         self,
         date_yyyy_mm: str,
-        out_dir: str,
+        out_dir: str = _DOWNLOADS_DIR,
         account_contains: str = "",
         cdp_url: str = _CDP_URL,
         **_,
@@ -179,7 +180,7 @@ class FidelityDownloadPositions(BaseTool):
         "properties": {
             "out_dir": {
                 "type": "string",
-                "description": "Directory path to save the CSV file, e.g. './Statements/Fidelity'.",
+                "description": "Directory to save the CSV file. Default saves to the Downloads folder accessible at manus.designflow.app/admin/downloads.",
             },
             "cdp_url": {
                 "type": "string",
@@ -191,7 +192,7 @@ class FidelityDownloadPositions(BaseTool):
 
     async def execute(
         self,
-        out_dir: str,
+        out_dir: str = _DOWNLOADS_DIR,
         cdp_url: str = _CDP_URL,
         **_,
     ) -> ToolResult:

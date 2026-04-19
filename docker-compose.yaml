@@ -11,16 +11,23 @@ services:
       - 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}'
       - 'OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-https://openrouter.ai/api/v1}'
       - 'BROWSER_CDP_URL=http://novnc:9223'
+      - 'CLAWDTALK_API_KEY=${CLAWDTALK_API_KEY:-}'
+      - 'CLAWDTALK_SERVER_URL=${CLAWDTALK_SERVER_URL:-https://clawdtalk.com}'
+      - 'CLAWDTALK_WS_URL=${CLAWDTALK_WS_URL:-}'
+      - 'CLAWDTALK_AGENT_NAME=${CLAWDTALK_AGENT_NAME:-OpenManus}'
+      - 'CLAWDTALK_OWNER_NAME=${CLAWDTALK_OWNER_NAME:-}'
+      - 'CLAWDTALK_GREETING=${CLAWDTALK_GREETING:-}'
     ports:
       - '8001:8000'
     volumes:
       - /data/coolify/openmanus/user_tools:/app/user_tools
+      - /data/coolify/openmanus/downloads:/app/downloads
       - /mnt/tailscale/souls:/app/custom_souls
     depends_on:
       - novnc
     labels:
       - traefik.enable=true
-      - "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`))"
+      - "traefik.http.routers.openmanus-admin.rule=Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/admin/downloads`) || PathPrefix(`/api/tools`) || PathPrefix(`/api/owui`) || PathPrefix(`/api/clawdtalk`))"
       - traefik.http.routers.openmanus-admin.entrypoints=https
       - traefik.http.routers.openmanus-admin.tls=true
       - traefik.http.routers.openmanus-admin.tls.certresolver=letsencrypt

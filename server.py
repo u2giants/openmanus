@@ -2,6 +2,9 @@
 OpenAI-compatible HTTP API wrapper around OpenManus Manus agent.
 Runs on 0.0.0.0:8000 via uvicorn.
 """
+import asyncio
+import contextlib
+import os
 import uuid
 import time
 import json
@@ -10,6 +13,7 @@ import importlib.util
 import sys
 import inspect
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
@@ -23,6 +27,195 @@ app = FastAPI(title="OpenManus API")
 # Directory for user-defined tools (persisted via Docker volume)
 USER_TOOLS_DIR = Path("/app/user_tools")
 SETTINGS_FILE = USER_TOOLS_DIR / ".settings.json"
+
+# Directory for downloaded files (statements, CSVs, etc.) — persisted via Docker volume
+DOWNLOADS_DIR = Path("/app/downloads")
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _derive_ws_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return urlunparse((scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+
+
+class ClawdTalkBridge:
+    def __init__(self) -> None:
+        self.api_key = os.environ.get("CLAWDTALK_API_KEY", "").strip()
+        self.server_url = os.environ.get("CLAWDTALK_SERVER_URL", "https://clawdtalk.com").rstrip("/")
+        self.ws_url = (os.environ.get("CLAWDTALK_WS_URL", "") or _derive_ws_url(self.server_url)).strip()
+        self.agent_name = os.environ.get("CLAWDTALK_AGENT_NAME", "OpenManus").strip() or "OpenManus"
+        self.owner_name = os.environ.get("CLAWDTALK_OWNER_NAME", "").strip()
+        self.greeting = os.environ.get("CLAWDTALK_GREETING", "").strip()
+        self.enabled = bool(self.api_key)
+        self.available = False
+        self.connected = False
+        self.last_error = ""
+        self.last_event_at = 0.0
+        self.last_message_at = 0.0
+        self.last_call_id = ""
+        self._task: asyncio.Task | None = None
+        self._send_lock = asyncio.Lock()
+        self._conversations: dict[str, list[dict]] = {}
+        self._active_calls: set[str] = set()
+
+    def status(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "available": self.available,
+            "connected": self.connected,
+            "server_url": self.server_url,
+            "ws_url": self.ws_url,
+            "agent_name": self.agent_name,
+            "owner_name": self.owner_name,
+            "last_error": self.last_error,
+            "last_event_at": self.last_event_at or None,
+            "last_message_at": self.last_message_at or None,
+            "last_call_id": self.last_call_id or None,
+            "active_calls": sorted(self._active_calls),
+        }
+
+    def _auth_headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
+            "User-Agent": "openmanus-clawdtalk/1.0",
+        }
+
+    async def start(self) -> None:
+        if not self.enabled:
+            logger.info("ClawdTalk bridge disabled: no CLAWDTALK_API_KEY configured")
+            return
+        try:
+            import websockets  # noqa: F401
+        except Exception as e:
+            self.last_error = f"websockets dependency unavailable: {e}"
+            logger.warning("ClawdTalk bridge unavailable: %s", self.last_error)
+            return
+        self.available = True
+        self._task = asyncio.create_task(self._run_forever())
+        logger.info("ClawdTalk bridge enabled | server=%s ws=%s", self.server_url, self.ws_url)
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        self.connected = False
+        self._active_calls.clear()
+
+    async def _run_forever(self) -> None:
+        import websockets
+
+        while True:
+            try:
+                logger.info("Connecting to ClawdTalk websocket: %s", self.ws_url)
+                async with websockets.connect(
+                    self.ws_url,
+                    additional_headers=self._auth_headers(),
+                    ping_interval=20,
+                    ping_timeout=20,
+                    open_timeout=20,
+                    max_size=2_000_000,
+                ) as websocket:
+                    self.connected = True
+                    self.last_error = ""
+                    await self._handle_socket(websocket)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.connected = False
+                self.last_error = str(e)
+                logger.warning("ClawdTalk websocket error: %s", e)
+                await asyncio.sleep(5)
+
+    async def _handle_socket(self, websocket) -> None:
+        async for raw in websocket:
+            self.last_event_at = time.time()
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                logger.debug("Ignoring non-JSON ClawdTalk frame: %r", raw)
+                continue
+
+            event = payload.get("event") or payload.get("type")
+            if event == "message" and payload.get("call_id") and payload.get("text"):
+                call_id = str(payload["call_id"])
+                self.last_call_id = call_id
+                self.last_message_at = time.time()
+                self._active_calls.add(call_id)
+                asyncio.create_task(self._handle_message(websocket, payload))
+                continue
+
+            if event in {"call_ended", "ended", "hangup"} and payload.get("call_id"):
+                call_id = str(payload["call_id"])
+                self._active_calls.discard(call_id)
+                self._conversations.pop(call_id, None)
+                continue
+
+            if event in {"ping", "heartbeat"} and payload.get("call_id"):
+                await self._send_json(websocket, {"type": "pong", "call_id": payload["call_id"]})
+
+    async def _handle_message(self, websocket, payload: dict) -> None:
+        call_id = str(payload["call_id"])
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return
+
+        history = self._conversations.setdefault(call_id, [])
+        history.append({"role": "user", "content": text})
+        history[:] = history[-20:]
+
+        messages = history
+        if len(history) == 1 and self.greeting:
+            messages = [{
+                "role": "system",
+                "content": (
+                    f"You are speaking over a live ClawdTalk phone call as {self.agent_name}. "
+                    f"The human caller is {self.owner_name or 'the user'}. "
+                    f"Keep answers concise and natural for voice. Opening greeting: {self.greeting}"
+                ),
+            }, *history]
+
+        try:
+            answer = await run_manus_agent(
+                messages=messages,
+                requested_model=None,
+                requested_temperature=None,
+                requested_max_tokens=None,
+            )
+        except Exception as e:
+            logger.error("ClawdTalk call %s failed: %s", call_id, e, exc_info=True)
+            answer = "I hit an internal error while processing that. Please try again."
+
+        history.append({"role": "assistant", "content": answer})
+        history[:] = history[-20:]
+        await self._send_json(websocket, {"type": "response", "call_id": call_id, "text": answer})
+
+    async def _send_json(self, websocket, payload: dict) -> None:
+        async with self._send_lock:
+            await websocket.send(json.dumps(payload))
+
+    async def create_call(self, payload: dict) -> dict:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{self.server_url}/v1/calls",
+                headers=self._auth_headers(),
+                json=payload,
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"status_code": resp.status_code, "text": resp.text}
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+        return data
+
+
+clawdtalk_bridge = ClawdTalkBridge()
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +462,67 @@ def load_user_tools() -> list:
         except Exception as e:
             logger.warning(f"Failed to load user tool {py_file.name}: {e}")
     return tools
+
+
+async def run_manus_agent(
+    messages: list[dict],
+    requested_model: str | None,
+    requested_temperature: float | None,
+    requested_max_tokens: int | None,
+    selected_tool_names: set[str] | None = None,
+) -> str:
+    from app.agent.manus import Manus
+    from app.llm import LLM
+    from app.schema import Message
+
+    llm = LLM()
+    if requested_model and requested_model not in ("manus", "openmanus"):
+        llm.model = requested_model
+    if requested_temperature is not None:
+        llm.temperature = float(requested_temperature)
+    if requested_max_tokens is not None:
+        llm.max_tokens = int(requested_max_tokens)
+
+    user_prompt = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+        "",
+    )
+    if not user_prompt:
+        raise ValueError("No user message found")
+
+    prior_messages = []
+    for msg in messages[:-1]:
+        role = msg.get("role", "user")
+        content = msg.get("content") or ""
+        if role == "user":
+            prior_messages.append(Message.user_message(content))
+        elif role == "assistant":
+            prior_messages.append(Message.assistant_message(content))
+        elif role == "system":
+            prior_messages.append(Message.system_message(content))
+
+    agent = await Manus.create(max_steps=2000)
+    if prior_messages:
+        agent.messages = prior_messages
+
+    all_user_tools = load_user_tools()
+    user_tools = [t for t in all_user_tools if t.name in selected_tool_names] if selected_tool_names else all_user_tools
+    for tool in user_tools:
+        try:
+            agent.available_tools.add_tool(tool)
+        except Exception as e:
+            logger.warning(f"Could not inject user tool '{getattr(tool, 'name', tool)}': {e}")
+
+    try:
+        result = await agent.run(user_prompt)
+    finally:
+        await agent.cleanup()
+
+    if hasattr(result, "content"):
+        return result.content
+    if isinstance(result, str):
+        return result
+    return str(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1531,6 +1785,134 @@ async def owui_install_function(func_id: str, request: Request):
     return {"ok": ok, "message": msg}
 
 
+@app.on_event("startup")
+async def startup_event():
+    await clawdtalk_bridge.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await clawdtalk_bridge.stop()
+
+
+@app.get("/api/clawdtalk/status")
+async def clawdtalk_status():
+    return clawdtalk_bridge.status()
+
+
+@app.post("/api/clawdtalk/calls")
+async def clawdtalk_create_call(request: Request):
+    if not clawdtalk_bridge.enabled:
+        raise HTTPException(status_code=503, detail="ClawdTalk bridge is not configured")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    if "to" not in payload:
+        raise HTTPException(status_code=400, detail="Missing required field: to")
+    return await clawdtalk_bridge.create_call(payload)
+
+
+# ---------------------------------------------------------------------------
+# Downloads — file browser for statements, CSVs, and other agent-saved files
+# ---------------------------------------------------------------------------
+
+_DOWNLOADS_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Downloads</title>
+<style>
+  body{{font-family:system-ui,sans-serif;max-width:860px;margin:40px auto;padding:0 20px;color:#1a1a1a}}
+  h1{{font-size:1.4rem;margin-bottom:4px}}
+  .sub{{color:#666;font-size:.9rem;margin-bottom:24px}}
+  table{{width:100%;border-collapse:collapse}}
+  th{{text-align:left;border-bottom:2px solid #e5e7eb;padding:8px 12px;font-size:.8rem;color:#6b7280;text-transform:uppercase}}
+  td{{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:.95rem}}
+  tr:hover td{{background:#f9fafb}}
+  a{{color:#2563eb;text-decoration:none}}
+  a:hover{{text-decoration:underline}}
+  .size{{color:#9ca3af;font-size:.85rem}}
+  .empty{{color:#9ca3af;padding:40px 0;text-align:center}}
+  .dir{{font-weight:600;color:#374151}}
+  .breadcrumb{{font-size:.9rem;margin-bottom:16px;color:#6b7280}}
+  .breadcrumb a{{color:#2563eb}}
+</style>
+</head>
+<body>
+<h1>Downloads</h1>
+<div class="sub">Files saved by OpenManus agents — statements, CSVs, and other exports.</div>
+<div class="breadcrumb">{breadcrumb}</div>
+<table>
+<tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr>
+{rows}
+</table>
+</body>
+</html>"""
+
+
+@app.get("/admin/downloads", response_class=HTMLResponse)
+@app.get("/admin/downloads/{subpath:path}", response_class=HTMLResponse)
+async def downloads_browser(request: Request, subpath: str = ""):
+    import html as html_module
+    import mimetypes
+    from datetime import datetime
+
+    rel = Path(subpath) if subpath else Path(".")
+    target = (DOWNLOADS_DIR / rel).resolve()
+
+    # Safety: never escape outside DOWNLOADS_DIR
+    try:
+        target.relative_to(DOWNLOADS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if target.is_file():
+        # Serve the file for download
+        from fastapi.responses import FileResponse
+        mime, _ = mimetypes.guess_type(target.name)
+        return FileResponse(
+            path=str(target),
+            filename=target.name,
+            media_type=mime or "application/octet-stream",
+        )
+
+    # Directory listing
+    parts = ["<a href='/admin/downloads'>downloads</a>"]
+    so_far = ""
+    for part in rel.parts:
+        so_far = f"{so_far}/{part}" if so_far else part
+        parts.append(f"<a href='/admin/downloads/{so_far}'>{html_module.escape(part)}</a>")
+    breadcrumb = " / ".join(parts)
+
+    rows = []
+    if rel != Path("."):
+        parent = str(rel.parent) if rel.parent != Path(".") else ""
+        up_href = f"/admin/downloads/{parent}" if parent else "/admin/downloads"
+        rows.append(f"<tr><td><a href='{up_href}'>.. (up)</a></td><td></td><td></td><td></td></tr>")
+
+    entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    for entry in entries:
+        name = html_module.escape(entry.name)
+        rel_path = (rel / entry.name) if subpath else entry.name
+        href = f"/admin/downloads/{rel_path}"
+        mod = datetime.fromtimestamp(entry.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        if entry.is_dir():
+            rows.append(f"<tr><td class='dir'><a href='{href}'>{name}/</a></td><td></td><td class='size'>{mod}</td><td></td></tr>")
+        else:
+            size = entry.stat().st_size
+            size_str = f"{size/1024:.1f} KB" if size < 1_048_576 else f"{size/1_048_576:.1f} MB"
+            rows.append(f"<tr><td><a href='{href}'>{name}</a></td><td class='size'>{size_str}</td><td class='size'>{mod}</td><td><a href='{href}'>⬇ download</a></td></tr>")
+
+    if not entries:
+        rows.append("<tr><td colspan='4' class='empty'>No files yet. Ask the agent to download something.</td></tr>")
+
+    html = _DOWNLOADS_HTML.format(breadcrumb=breadcrumb, rows="\n".join(rows))
+    return HTMLResponse(html)
+
+
 # ---------------------------------------------------------------------------
 # Core API
 # ---------------------------------------------------------------------------
@@ -1594,33 +1976,6 @@ async def chat_completions(request: Request):
             f"max_tokens={requested_max_tokens} | prompt={prompt[:100]}..."
         )
 
-        from app.agent.manus import Manus
-        from app.llm import LLM
-        from app.schema import Message
-
-        llm = LLM()
-        if requested_model and requested_model not in ("manus", "openmanus"):
-            llm.model = requested_model
-        if requested_temperature is not None:
-            llm.temperature = float(requested_temperature)
-        if requested_max_tokens is not None:
-            llm.max_tokens = int(requested_max_tokens)
-
-        prior_messages = []
-        for msg in messages[:-1]:
-            role = msg.get("role", "user")
-            content = msg.get("content") or ""
-            if role == "user":
-                prior_messages.append(Message.user_message(content))
-            elif role == "assistant":
-                prior_messages.append(Message.assistant_message(content))
-            elif role == "system":
-                prior_messages.append(Message.system_message(content))
-
-        agent = await Manus.create(max_steps=2000)
-        if prior_messages:
-            agent.messages = prior_messages
-
         # Inject user tools. When OpenWebUI sends a `tools` array (user selected specific tools
         # via the ⚡ tool selector in chat), only inject those. Otherwise inject all — backwards
         # compat for when OpenWebUI integration is not configured.
@@ -1629,31 +1984,23 @@ async def chat_completions(request: Request):
             for t in (body.get("tools") or [])
             if isinstance(t, dict) and t.get("type") == "function"
         }
-        all_user_tools = load_user_tools()
-        user_tools = [t for t in all_user_tools if t.name in _owui_selected] if _owui_selected else all_user_tools
-        for tool in user_tools:
-            try:
-                agent.available_tools.add_tool(tool)
-            except Exception as e:
-                logger.warning(f"Could not inject user tool '{getattr(tool, 'name', tool)}': {e}")
-
-        try:
-            result = await agent.run(prompt)
-        finally:
-            await agent.cleanup()
-
-        if hasattr(result, "content"):
-            answer = result.content
-        elif isinstance(result, str):
-            answer = result
-        else:
-            answer = str(result)
+        answer = await run_manus_agent(
+            messages=messages,
+            requested_model=requested_model,
+            requested_temperature=requested_temperature,
+            requested_max_tokens=requested_max_tokens,
+            selected_tool_names=_owui_selected or None,
+        )
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         model_id = requested_model or "manus"
 
         try:
+            from app.llm import LLM
+            llm = LLM()
+            if requested_model and requested_model not in ("manus", "openmanus"):
+                llm.model = requested_model
             prompt_tokens = llm.count_tokens(" ".join(m.get("content", "") or "" for m in messages))
             completion_tokens = llm.count_tokens(answer or "")
         except Exception:

@@ -10,6 +10,26 @@ A 3-container Docker stack that gives OpenManus AI agents a real browser they ca
 | Tool Manager | <https://manus.designflow.app/admin/tools> |
 | noVNC desktop (watch the browser) | <https://vnc.designflow.app> |
 
+## ClawdTalk
+
+The backend now has an opt-in ClawdTalk bridge for phone/SMS-style voice sessions. When `CLAWDTALK_API_KEY` is set, `server.py` opens a persistent outbound WebSocket to ClawdTalk, routes inbound `message` events through the existing Manus agent path, and replies with ClawdTalk `response` frames. The bridge keeps short per-call conversation history so a live call has context across turns.
+
+Environment variables on `openmanus-backend`:
+
+| Variable | Default | Purpose |
+|---------|---------|---------|
+| `CLAWDTALK_API_KEY` | unset | Enables the bridge and authenticates with ClawdTalk |
+| `CLAWDTALK_SERVER_URL` | `https://clawdtalk.com` | Base URL for REST calls like outbound call creation |
+| `CLAWDTALK_WS_URL` | derived from server URL | Explicit WebSocket URL override if ClawdTalk assigns a different endpoint |
+| `CLAWDTALK_AGENT_NAME` | `OpenManus` | Name presented to ClawdTalk for this agent |
+| `CLAWDTALK_OWNER_NAME` | unset | Optional caller/owner hint used in the voice prompt |
+| `CLAWDTALK_GREETING` | unset | Optional first-turn greeting/instruction for voice calls |
+
+Operational endpoints:
+
+- `GET /api/clawdtalk/status` — current bridge state, connection status, last error, active calls
+- `POST /api/clawdtalk/calls` — proxy to ClawdTalk outbound call creation; body is forwarded to `CLAWDTALK_SERVER_URL/v1/calls`
+
 ## Architecture
 
 ```
@@ -57,6 +77,7 @@ All traffic enters via Traefik on `manus.designflow.app`. More-specific rules wi
 | `Path('/admin/tools')` | `openmanus-backend:8000` | Tool Manager UI — exactly this one path |
 | `PathPrefix('/api/tools')` | `openmanus-backend:8000` | Tool CRUD and invocation API |
 | `PathPrefix('/api/owui')` | `openmanus-backend:8000` | OpenWebUI sync API |
+| `PathPrefix('/api/clawdtalk')` | `openmanus-backend:8000` | ClawdTalk bridge status + outbound call API |
 | `Host('manus.designflow.app')` catch-all | `open-webui:8080` | Everything else (chat, OpenWebUI admin, etc.) |
 | `Host('vnc.designflow.app')` | `novnc:3000` | Desktop viewer |
 

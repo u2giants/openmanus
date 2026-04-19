@@ -29,7 +29,13 @@ services:
   open-webui:
     image: 'ghcr.io/open-webui/open-webui:main'
     pull_policy: if_not_present
-    restart: unless-stopped
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     environment:
       - 'OPENAI_API_BASE_URL=http://openmanus-backend:8000/v1'
       - 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}'

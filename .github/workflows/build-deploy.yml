@@ -3,6 +3,9 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.txt'
   workflow_dispatch:
 
 env:
@@ -89,8 +92,17 @@ jobs:
     steps:
       - name: Wait for Coolify deployment to settle
         run: |
-          echo "Waiting 150s for Coolify to pull image and restart containers..."
-          sleep 150
+          echo "Polling until OpenWebUI reports healthy (max 5 min)..."
+          deadline=$((SECONDS + 300))
+          until curl -sf --max-time 10 "${SMOKE_BASE_URL}/" > /dev/null 2>&1; do
+            if [ $SECONDS -ge $deadline ]; then
+              echo "Timed out waiting for service to come up"
+              exit 1
+            fi
+            echo "Not ready yet, retrying in 15s..."
+            sleep 15
+          done
+          echo "Service is up, proceeding to smoke checks."
 
       - name: Smoke check critical routes
         run: |

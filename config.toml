@@ -15,3 +15,6 @@ daytona_api_key = "__DAYTONA_API_KEY__"
 headless = false
 disable_security = true
 cdp_url = "__BROWSER_CDP_URL__"
+
+[mcp]
+server_reference = "fidelity_mcp.server"

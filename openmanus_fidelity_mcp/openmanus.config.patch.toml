@@ -1,0 +1,18 @@
+# Copy these sections into OpenManus/config/config.toml
+
+[llm]
+model = "minimax/minimax-m2.5"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-REPLACE_ME"
+max_tokens = 8192
+temperature = 0.0
+
+[llm.vision]
+model = "moonshotai/kimi-k2.5"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "sk-or-REPLACE_ME"
+max_tokens = 8192
+temperature = 0.0
+
+[mcp]
+server_reference = "fidelity_mcp.server"

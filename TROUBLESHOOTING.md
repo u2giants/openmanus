@@ -169,7 +169,7 @@ Compare with the digest pushed to GHCR in the GitHub Actions log.
 
 ## Browser Automation Fails / CDP Connection Refused
 
-**Symptom**: Agent reports `RetryError`, `ConnectionRefusedError`, or browser tool fails silently.
+**Symptom**: Agent reports `RetryError`, `ConnectionRefusedError`, or browser tool fails silently. Or the CDP proxy on port 9223 returns HTTP 502.
 
 **Checks**:
 
@@ -207,6 +207,24 @@ Compare with the digest pushed to GHCR in the GitHub Actions log.
    docker exec openmanus-backend env | grep BROWSER_CDP_URL
    ```
    Expected: `BROWSER_CDP_URL=http://novnc:9223`
+
+### Cause: Stale Chromium singleton lock from previous container instance
+
+**Symptom**: Port 9223 is open (proxy is running) but returns 502. Chromium is not in `ps aux`. The `novnc-startup.sh` startup log shows the CDP wait timed out.
+
+**Root cause**: Chromium writes `SingletonLock`, `SingletonCookie`, and `SingletonSocket` files to the profile directory when it starts. These files record the process ID and hostname. When the noVNC container is recreated (new hostname), Chromium finds a lock from a different "computer" and refuses to start (exits with code 21). The profile directory is a named Docker volume (`novnc-data`) that persists across container restarts and recreations, so the stale lock survives.
+
+**Automatic fix**: `novnc-startup.sh` now clears these files at every container init:
+```bash
+find /config/chromium-profile -maxdepth 1 -iname "singleton*" -delete
+```
+This runs before Chromium's MATE autostart fires, so stale locks are always cleared on startup.
+
+**Manual fix** (if you need to clear without a container restart):
+```bash
+docker exec novnc find /config/chromium-profile -maxdepth 1 -iname "singleton*" -delete
+```
+Chromium will start on its next attempt (MATE autostart or manual launch).
 
 ---
 

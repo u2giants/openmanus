@@ -92,7 +92,7 @@ All traffic enters via Traefik on `manus.designflow.app`. More-specific rules wi
 | [`server.py`](server.py) | FastAPI app — OpenAI API, Tool Manager UI + API, OpenWebUI sync endpoints |
 | [`config.toml`](config.toml) | OpenManus runtime config — LLM settings, browser CDP URL (env vars substituted at startup) |
 | [`docker-compose.yaml`](docker-compose.yaml) | 3-service compose definition with Traefik labels |
-| [`novnc-startup.sh`](novnc-startup.sh) | noVNC init — creates MATE autostart `.desktop` for Chromium, waits for CDP, starts CDP proxy |
+| [`novnc-startup.sh`](novnc-startup.sh) | noVNC init — clears stale Chromium singleton locks, creates MATE autostart `.desktop` for Chromium, waits for CDP, starts CDP proxy |
 | [`cdp_proxy.py`](cdp_proxy.py) | HTTP+WS proxy — forwards CDP from `127.0.0.1:9222` to `0.0.0.0:9223/9224`, rewrites URLs |
 
 ## Deployment Pipeline
@@ -115,7 +115,8 @@ git push main
 ### pull_policy design
 
 - `openmanus-backend`: `pull_policy: always` — this is our image, always fetch the latest on deploy
-- `open-webui` and `novnc`: `pull_policy: if_not_present` — these images don't change on our pushes; always-pulling them would force a full container restart (90+ second outage) on every deploy for no reason
+- `open-webui`: `pull_policy: if_not_present` — third-party image; does not change on our pushes; always-pulling it causes a 90+ second restart on every deploy for no reason
+- `novnc`: `pull_policy: always` — also a third-party image, but the noVNC container runs a bind-mounted startup script (`novnc-startup.sh`) that only executes at container init. Setting `always` ensures the container restarts on every deploy so script changes take effect. The trade-off is that any active browser session in noVNC is interrupted on each deploy.
 
 ### Smoke check
 

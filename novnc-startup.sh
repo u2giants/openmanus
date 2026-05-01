@@ -1,11 +1,14 @@
 #!/bin/bash
+# Clear stale Chromium singleton locks left by previous container instances
+find /config/chromium-profile -maxdepth 1 -iname "singleton*" -delete 2>/dev/null
+
 # Add Chromium to MATE autostart (runs after desktop is ready)
 mkdir -p /config/.config/autostart
 cat > /config/.config/autostart/chromium.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Chromium
-Exec=/usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --proxy-server=socks5://10.0.4.1:1080 --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
+Exec=/usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/config/chromium-profile
 Hidden=false
 NoDisplay=false
 X-MATE-Autostart-enabled=true

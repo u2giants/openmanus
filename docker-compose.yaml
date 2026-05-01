@@ -78,7 +78,7 @@ services:
 
   novnc:
     image: lscr.io/linuxserver/webtop:ubuntu-mate
-    pull_policy: if_not_present
+    pull_policy: always
     restart: unless-stopped
     environment:
       - PUID=1000

@@ -206,3 +206,29 @@ Host(`manus.designflow.app`) && (Path(`/admin/tools`) || PathPrefix(`/api/tools`
 Create and list endpoints do NOT use `/id/`: `POST /api/v1/tools/create`, `GET /api/v1/tools/`.
 
 **Warning for future developers**: This is not documented in the OpenWebUI source in an obvious place. If you see sync calls returning 405 or existence checks always returning true, check for missing `/id/` prefix. This was verified against OpenWebUI 0.8.12.
+
+---
+
+## Decision 2026-05-01-016: Clear Chromium singleton locks at novnc container init; remove SOCKS proxy flag
+
+**Context**: Chromium writes `SingletonLock`, `SingletonCookie`, and `SingletonSocket` to `/config/chromium-profile` recording its PID and hostname. The profile directory lives in the `novnc-data` named volume, which persists across container recreations. When the noVNC container is recreated (new hostname, as happens on every Coolify deploy), Chromium finds a lock from an "other computer" and exits with code 21 — it never starts, the CDP proxy runs but returns 502, and the agent can't connect.
+
+Additionally, the original `novnc-startup.sh` launched Chromium with `--proxy-server=socks5://10.0.4.1:1080`. This was a configuration artifact that routed all browser traffic through a SOCKS5 proxy that is not reachable from inside the noVNC container, making every web request fail with "This site can't be reached."
+
+**Decision**:
+1. Add `find /config/chromium-profile -maxdepth 1 -iname "singleton*" -delete 2>/dev/null` to the top of `novnc-startup.sh` so stale locks are cleared on every container init.
+2. Remove `--proxy-server=socks5://10.0.4.1:1080` from the Chromium launch command in both the MATE autostart `.desktop` file template in `novnc-startup.sh`.
+
+**Rationale**: The singleton cleanup is safe to run unconditionally — if Chromium is already running (not a concern at init time), it will just recreate the files. Removing the proxy flag lets Chromium use the container's default network routing, which has direct internet access.
+
+---
+
+## Decision 2026-05-01-017: Change novnc pull_policy from if_not_present to always
+
+**Context**: Decision 007 set novnc to `pull_policy: if_not_present` to avoid unnecessary container restarts. But `novnc-startup.sh` is bind-mounted and only runs at container init — it is not re-executed when the file changes on disk. So a code change to the startup script (like the singleton fix in Decision 016) would not take effect until the container was manually restarted.
+
+**Decision**: Change `novnc` to `pull_policy: always`. The noVNC image (`lscr.io/linuxserver/webtop:ubuntu-mate`) uses a floating tag and rarely has new versions pushed, so in practice this only restarts the container without re-downloading the image. The container restart ensures `novnc-startup.sh` changes are applied on every deploy.
+
+**Trade-off**: Any active browser session in the noVNC container (open tabs, logged-in state) is lost on each deploy. This is acceptable because the browser is used for short-lived automation tasks, not persistent sessions. If a session needs to survive a deploy, use a Coolify manual "start/stop" toggle rather than code pushes.
+
+**Alternative considered**: Trigger a selective novnc restart only when `novnc-startup.sh` changes. Rejected — detecting file-level changes in CI and conditionally restarting a single container adds significant workflow complexity for minimal benefit.

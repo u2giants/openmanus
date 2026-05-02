@@ -3,7 +3,7 @@ CDP proxy for noVNC container.
 - HTTP on :9223  — proxies Chrome's JSON endpoints, rewrites localhost:9222 → novnc:9224
 - WS   on :9224  — tunnels WebSocket CDP connections to Chrome on localhost:9222
 
-Newer Chrome always binds the CDP debugger to 127.0.0.1 regardless of
+Chrome binds the CDP debugger to ::1 (IPv6 loopback) regardless of
 --remote-debugging-address, so this proxy makes it reachable from other containers.
 """
 
@@ -41,7 +41,7 @@ async def ws_handle(cr, cw):
         buf += chunk
     # Rewrite Host so Chrome accepts the connection
     req = re.sub(rb"Host: [^\r\n]+", b"Host: localhost:9222", buf)
-    sr, sw = await asyncio.open_connection("127.0.0.1", 9222)
+    sr, sw = await asyncio.open_connection("::1", 9222)
     sw.write(req)
     await sw.drain()
     # Forward Chrome's 101 Switching Protocols response
@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             req = urllib.request.Request(
-                "http://127.0.0.1:9222" + self.path,
+                "http://[::1]:9222" + self.path,
                 headers={"Host": "localhost:9222"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:

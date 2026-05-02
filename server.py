@@ -2352,6 +2352,185 @@ async def gdrive_disconnect():
 
 
 # ---------------------------------------------------------------------------
+# Cookie import / export  (helps authenticate Fidelity from a residential IP)
+# ---------------------------------------------------------------------------
+
+_COOKIE_PAGE = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Cookie Manager</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:860px;margin:40px auto;padding:0 20px;background:#f8f9fa}
+h1{font-size:1.4rem;margin-bottom:4px}
+.sub{color:#666;font-size:.9rem;margin-bottom:24px}
+.card{background:#fff;border:1px solid #dee2e6;border-radius:8px;padding:20px;margin-bottom:20px}
+h2{font-size:1rem;margin:0 0 12px}
+input[type=text]{width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px;font-size:.9rem;box-sizing:border-box}
+label{font-size:.85rem;color:#555;display:block;margin-bottom:4px}
+button,.btn{display:inline-block;padding:8px 18px;background:#0d6efd;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.9rem;text-decoration:none}
+button:hover,.btn:hover{background:#0b5ed7}
+.btn-secondary{background:#6c757d}
+.btn-secondary:hover{background:#5c636a}
+.note{color:#888;font-size:.8rem;margin-top:8px}
+#status{margin-top:12px;padding:10px;border-radius:4px;display:none}
+.ok{background:#d1e7dd;color:#0f5132}
+.err{background:#f8d7da;color:#842029}
+textarea{width:100%;height:120px;font-family:monospace;font-size:.8rem;border:1px solid #ced4da;border-radius:4px;padding:8px;box-sizing:border-box}
+nav{margin-bottom:20px;font-size:.9rem}
+nav a{color:#0d6efd;margin-right:12px;text-decoration:none}
+</style>
+</head>
+<body>
+<nav><a href="/admin/tools">Tools</a><a href="/admin/downloads">Downloads</a><a href="/admin/gdrive">Google Drive</a><a href="/admin/cookies">Cookies</a></nav>
+<h1>Cookie Manager</h1>
+<p class="sub">Export cookies from the noVNC Chrome browser, or import saved cookies (e.g. from Cookie-Editor). Useful for authenticating Fidelity when the server IP is blocked.</p>
+
+<div class="card">
+  <h2>Export cookies from Chrome</h2>
+  <label>Domain filter (leave blank for all)</label>
+  <input type="text" id="domain" placeholder="fidelity.com" value="fidelity.com" style="max-width:300px">
+  <br><br>
+  <button onclick="exportCookies()">Export as JSON</button>
+  <p class="note">Downloads a JSON file you can re-import later, or share with Cookie-Editor.</p>
+</div>
+
+<div class="card">
+  <h2>Import cookies into Chrome</h2>
+  <p class="note" style="margin-top:0">Paste a Cookie-Editor JSON export, or a file exported from this page:</p>
+  <textarea id="importJson" placeholder='[{"name":"...","value":"...","domain":".fidelity.com",...}]'></textarea>
+  <br><br>
+  <input type="file" id="importFile" accept=".json" onchange="loadFile(this)" style="margin-bottom:8px;display:block">
+  <button onclick="importCookies()">Import into Chrome</button>
+  <div id="status"></div>
+</div>
+
+<script>
+async function exportCookies() {
+  const domain = document.getElementById('domain').value.trim();
+  const url = '/api/cookies/export' + (domain ? '?domain=' + encodeURIComponent(domain) : '');
+  const r = await fetch(url);
+  const data = await r.json();
+  if (!r.ok) { alert('Error: ' + (data.detail || JSON.stringify(data))); return; }
+  const blob = new Blob([JSON.stringify(data.cookies, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (domain || 'all') + '-cookies.json';
+  a.click();
+}
+
+function loadFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById('importJson').value = e.target.result; };
+  reader.readAsText(file);
+}
+
+async function importCookies() {
+  const raw = document.getElementById('importJson').value.trim();
+  const st = document.getElementById('status');
+  st.style.display = 'none';
+  if (!raw) { alert('Paste cookie JSON first'); return; }
+  let cookies;
+  try { cookies = JSON.parse(raw); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
+  const r = await fetch('/api/cookies/import', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cookies}),
+  });
+  const data = await r.json();
+  st.style.display = 'block';
+  if (r.ok) {
+    st.className = 'ok';
+    st.textContent = 'Imported ' + data.imported + ' cookies successfully.';
+  } else {
+    st.className = 'err';
+    st.textContent = 'Error: ' + (data.detail || JSON.stringify(data));
+  }
+}
+</script>
+</body>
+</html>"""
+
+
+async def _cdp_cookies(action: str, cookies_in: list | None = None):
+    """Run a cookie get/set via Playwright connecting over CDP."""
+    from playwright.async_api import async_playwright
+
+    cdp_url = os.environ.get("BROWSER_CDP_URL", "http://novnc:9223")
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(cdp_url)
+        try:
+            ctx = browser.contexts[0] if browser.contexts else None
+            if ctx is None:
+                raise RuntimeError("No browser context found")
+            if action == "get":
+                return await ctx.cookies()
+            else:
+                # Playwright add_cookies expects 'expires' not 'expirationDate'
+                normalized = []
+                for c in cookies_in or []:
+                    nc = {
+                        k: v
+                        for k, v in c.items()
+                        if k
+                        in (
+                            "name",
+                            "value",
+                            "domain",
+                            "path",
+                            "secure",
+                            "httpOnly",
+                            "sameSite",
+                        )
+                    }
+                    exp = c.get("expirationDate") or c.get("expires")
+                    if exp:
+                        nc["expires"] = float(exp)
+                    if nc.get("domain") and not nc.get("url"):
+                        domain = nc["domain"]
+                        scheme = "https" if nc.get("secure") else "http"
+                        nc.setdefault("url", f"{scheme}://{domain.lstrip('.')}/")
+                    normalized.append(nc)
+                await ctx.add_cookies(normalized)
+                return len(normalized)
+        finally:
+            await browser.disconnect()
+
+
+@app.get("/admin/cookies", response_class=HTMLResponse)
+async def cookie_manager_ui():
+    return HTMLResponse(_COOKIE_PAGE)
+
+
+@app.get("/api/cookies/export")
+async def export_cookies(domain: str = ""):
+    try:
+        all_cookies = await _cdp_cookies("get")
+        if domain:
+            all_cookies = [
+                c for c in all_cookies if domain.lstrip(".") in c.get("domain", "")
+            ]
+        return {"cookies": all_cookies, "count": len(all_cookies)}
+    except Exception as e:
+        raise HTTPException(502, f"CDP error: {e}") from e
+
+
+@app.post("/api/cookies/import")
+async def import_cookies(request: Request):
+    body = await request.json()
+    cookies = body.get("cookies", [])
+    if not cookies:
+        raise HTTPException(400, "No cookies provided")
+    try:
+        count = await _cdp_cookies("set", cookies)
+        return {"imported": count}
+    except Exception as e:
+        raise HTTPException(502, f"CDP error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
 # Core API
 # ---------------------------------------------------------------------------
 

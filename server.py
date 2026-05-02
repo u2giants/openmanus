@@ -2370,9 +2370,8 @@ def _fmt_model_name(raw_name: str, pricing: dict) -> str:
         out = float(pricing.get("completion", 0)) * 1_000_000
 
         def _p(v):
-            if v == 0:
-                return "free"
-            # Show up to 3 sig figs, strip trailing zeros
+            if v <= 0:
+                return "?"
             s = f"{v:.3g}"
             return f"${s}"
 

@@ -2,7 +2,7 @@
 # Env vars are substituted by entrypoint.sh at container startup
 
 [llm]
-model = "openai/gpt-4o"
+model = "deepseek/deepseek-v4-pro"
 base_url = "__OPENAI_API_BASE_URL__"
 api_key = "__OPENAI_API_KEY__"
 max_tokens = 4096

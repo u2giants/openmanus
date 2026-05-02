@@ -417,7 +417,20 @@ try:
         "   sync_playwright, Chrome DevTools Protocol). The browser is in a separate "
         "   container — Python code cannot reach it. Use only browser_use tool actions.\n"
         "8. When downloading files, use the browser to navigate and click download buttons "
-        "   directly. Check screenshots to confirm what is actually rendered before clicking."
+        "   directly. Check screenshots to confirm what is actually rendered before clicking.\n\n"
+
+        "ERROR HANDLING — MANDATORY:\n"
+        "9. When any tool call returns an error, immediately output the full error text to "
+        "   the user verbatim, prefixed with '⚠️ Tool error:'. Do not silently swallow errors.\n"
+        "10. If the same tool fails 2 or more times in a row with the same or similar error, "
+        "    STOP immediately. Tell the user exactly which tool failed, show the exact error "
+        "    message, explain what you were trying to do, and ask how they want to proceed. "
+        "    Do not keep retrying indefinitely.\n"
+        "11. After every 5 steps on any multi-step task, output a one-sentence progress "
+        "    summary: what has been done so far and what remains.\n"
+        "12. If you are about to give up or cannot make progress, tell the user explicitly "
+        "    what blocked you (exact error or obstacle) rather than just saying the task "
+        "    cannot be completed."
     )
     logger.info("Manus system prompt patched with noVNC browser info")
 except Exception as e:
@@ -2227,6 +2240,112 @@ async def chat_completions(request: Request):
             for t in (body.get("tools") or [])
             if isinstance(t, dict) and t.get("type") == "function"
         }
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        model_id = requested_model or "manus"
+
+        if stream:
+            # Real streaming: intercept loguru agent logs via a temporary sink and
+            # push each meaningful line to a queue so the SSE generator can yield
+            # progress chunks while the agent is still running.
+            progress_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
+
+            async def _run_with_sink() -> str:
+                import re as _re
+                try:
+                    from loguru import logger as _loguru
+                except ImportError:
+                    return await run_manus_agent(
+                        messages=messages,
+                        requested_model=requested_model,
+                        requested_temperature=requested_temperature,
+                        requested_max_tokens=requested_max_tokens,
+                        selected_tool_names=_owui_selected or None,
+                    )
+
+                _MARKERS = ("Executing step", "✨", "🛠️", "🧰", "🎯", "🚨",
+                            "Token limit", "stuck", "Error", "error")
+
+                def _sink(record):
+                    msg = record["message"].strip()
+                    if any(m in msg for m in _MARKERS):
+                        try:
+                            progress_q.put_nowait(msg)
+                        except Exception:
+                            pass
+
+                sink_id = _loguru.add(
+                    _sink,
+                    filter=lambda r: r["name"].startswith("app."),
+                    format="{message}",
+                    level="INFO",
+                )
+                try:
+                    return await run_manus_agent(
+                        messages=messages,
+                        requested_model=requested_model,
+                        requested_temperature=requested_temperature,
+                        requested_max_tokens=requested_max_tokens,
+                        selected_tool_names=_owui_selected or None,
+                    )
+                finally:
+                    _loguru.remove(sink_id)
+                    await progress_q.put(None)  # sentinel: agent finished
+
+            agent_task = asyncio.create_task(_run_with_sink())
+
+            def _fmt(raw: str) -> str | None:
+                import re as _re
+                if "Executing step" in raw:
+                    m = _re.search(r'Executing step (\d+)/\d+', raw)
+                    return f"\n**Step {m.group(1)}**\n" if m else None
+                if "✨" in raw and "thoughts" in raw:
+                    thought = raw.split("thoughts:", 1)[-1].strip()
+                    return f"💭 {thought}\n" if thought else None
+                if "🧰" in raw and "prepared" in raw:
+                    tools = raw.split("prepared:", 1)[-1].strip()
+                    return f"🔧 Using: {tools}\n"
+                if "🎯" in raw:
+                    # Truncate long tool results to keep the stream readable
+                    truncated = raw[:400] + ("…" if len(raw) > 400 else "")
+                    return f"{truncated}\n"
+                if "🚨" in raw or "Token limit" in raw:
+                    return f"❌ {raw}\n"
+                # Surface explicit tool errors that aren't already caught above
+                if ("Error:" in raw or "error:" in raw) and "🎯" not in raw:
+                    return f"⚠️ {raw[:300]}\n"
+                return None
+
+            async def event_stream():
+                def _chunk(delta: dict, finish_reason=None) -> str:
+                    return f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_id, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}]})}\n\n"
+
+                yield _chunk({"role": "assistant"})
+
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(progress_q.get(), timeout=300.0)
+                    except asyncio.TimeoutError:
+                        yield _chunk({"content": "\n⏱️ Timed out waiting for agent step.\n"})
+                        break
+                    if raw is None:
+                        break
+                    line = _fmt(raw)
+                    if line:
+                        yield _chunk({"content": line})
+
+                try:
+                    answer = await asyncio.wait_for(agent_task, timeout=60.0)
+                except Exception as e:
+                    answer = f"Agent error: {e}"
+
+                if answer:
+                    yield _chunk({"content": f"\n---\n\n{answer}"})
+                yield _chunk({}, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+
         answer = await run_manus_agent(
             messages=messages,
             requested_model=requested_model,
@@ -2234,10 +2353,6 @@ async def chat_completions(request: Request):
             requested_max_tokens=requested_max_tokens,
             selected_tool_names=_owui_selected or None,
         )
-
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        created = int(time.time())
-        model_id = requested_model or "manus"
 
         try:
             from app.llm import LLM
@@ -2249,43 +2364,6 @@ async def chat_completions(request: Request):
         except Exception:
             prompt_tokens = len(prompt.split())
             completion_tokens = len(answer.split()) if answer else 0
-
-        if stream:
-            async def event_stream():
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model_id,
-                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model_id,
-                    "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": None}],
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model_id,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": prompt_tokens + completion_tokens,
-                    },
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
 
         return {
             "id": completion_id,

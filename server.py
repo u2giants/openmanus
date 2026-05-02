@@ -36,7 +36,8 @@ DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 def _derive_ws_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    return urlunparse((scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+    path = parsed.path if parsed.path and parsed.path != "/" else "/ws"
+    return urlunparse((scheme, parsed.netloc, path, "", "", ""))
 
 
 class ClawdTalkBridge:
@@ -108,6 +109,7 @@ class ClawdTalkBridge:
     async def _run_forever(self) -> None:
         import websockets
 
+        backoff = 5
         while True:
             try:
                 logger.info("Connecting to ClawdTalk websocket: %s", self.ws_url)
@@ -121,14 +123,16 @@ class ClawdTalkBridge:
                 ) as websocket:
                     self.connected = True
                     self.last_error = ""
+                    backoff = 5
                     await self._handle_socket(websocket)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.connected = False
                 self.last_error = str(e)
-                logger.warning("ClawdTalk websocket error: %s", e)
-                await asyncio.sleep(5)
+                logger.warning("ClawdTalk websocket error (retry in %ds): %s", backoff, e)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)
 
     async def _handle_socket(self, websocket) -> None:
         async for raw in websocket:

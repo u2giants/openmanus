@@ -14,14 +14,34 @@ from .browser import FidelityBrowser
 
 mcp = FastMCP("fidelity-mcp")
 _browser = FidelityBrowser()
+_chrome_proc: subprocess.Popen | None = None
 
 
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+def _reap_chrome() -> None:
+    """Terminate and wait for any tracked Chrome process so it doesn't become a zombie."""
+    global _chrome_proc
+    if _chrome_proc is None:
+        return
+    if _chrome_proc.poll() is None:
+        _chrome_proc.terminate()
+        try:
+            _chrome_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _chrome_proc.kill()
+            _chrome_proc.wait()
+    else:
+        # Already exited — collect its exit status to clear the zombie.
+        _chrome_proc.wait()
+    _chrome_proc = None
+
+
 @atexit.register
 def _cleanup() -> None:
+    _reap_chrome()
     _browser.close()
 
 
@@ -49,7 +69,9 @@ def launch_visible_chrome(
     if extra_args.strip():
         cmd.extend(shlex.split(extra_args))
 
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    global _chrome_proc
+    _reap_chrome()
+    _chrome_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return _json({
         "launched": True,
         "command": cmd,

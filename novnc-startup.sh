@@ -1,40 +1,21 @@
 #!/bin/bash
-CHROME_BIN=/usr/lib/chromium/chromium
-CHROME_PROFILE=/config/chromium-profile
-CHROME_LOG=/config/chromium.log
+# Write Chromium autostart for the MATE session.
+# Running inside the MATE session gives the correct DISPLAY and D-Bus
+# environment without needing to su or set DISPLAY manually.
+# The Exec is a watchdog loop: it clears stale singleton locks and restarts
+# Chromium automatically whenever it exits (crash, OOM, user close, etc.).
+mkdir -p /config/.config/autostart
+cat > /config/.config/autostart/chromium.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Chromium
+Exec=/bin/bash -c "while true; do find /config/chromium-profile -maxdepth 1 -iname 'singleton*' -delete 2>/dev/null; /usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --remote-debugging-port=9222 --remote-allow-origins='*' --user-data-dir=/config/chromium-profile https://www.fidelity.com; sleep 3; done"
+Hidden=false
+NoDisplay=false
+X-MATE-Autostart-enabled=true
+EOF
 
-_launch_chrome() {
-    # Clear stale singleton locks before each launch attempt
-    find "$CHROME_PROFILE" -maxdepth 1 -iname "singleton*" -delete 2>/dev/null
-    su -c "DISPLAY=:1 $CHROME_BIN \
-        --no-first-run \
-        --no-default-browser-check \
-        --disable-gpu \
-        --no-sandbox \
-        --disable-dev-shm-usage \
-        --remote-debugging-port=9222 \
-        --remote-allow-origins='*' \
-        --user-data-dir=$CHROME_PROFILE \
-        https://www.fidelity.com" abc >>"$CHROME_LOG" 2>&1
-}
-
-# Wait for the X display to be ready before touching it
-echo "Waiting for X display :1..."
-for i in $(seq 1 30); do
-    [ -S /tmp/.X11-unix/X1 ] && break
-    sleep 1
-done
-
-# Chrome watchdog: runs Chrome in the foreground; restarts it automatically
-# whenever it exits (crash, OOM kill, user close, etc.)
-(while true; do
-    echo "[chromium-watchdog] Launching Chromium..."
-    _launch_chrome
-    echo "[chromium-watchdog] Chromium exited. Restarting in 3s..."
-    sleep 3
-done) &
-
-# Wait until Chromium CDP is up (max 120 s)
+# Wait until Chromium CDP is up (MATE starts Chromium after X desktop is ready)
 echo "Waiting for Chromium CDP..."
 for i in $(seq 1 60); do
     if curl -sf http://127.0.0.1:9222/json/version >/dev/null 2>&1; then

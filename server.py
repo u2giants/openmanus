@@ -2201,34 +2201,19 @@ def _fmt_model_name(raw_name: str, pricing: dict) -> str:
 async def list_models():
     import os, httpx
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if api_key:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://openrouter.ai/api/v1/models/user",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for m in data.get("data", []):
-                        m["name"] = _fmt_model_name(
-                            m.get("name", m.get("id", "")),
-                            m.get("pricing", {}),
-                        )
-                    return data
-        except Exception as e:
-            logger.warning(f"Failed to fetch OpenRouter models: {e}")
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": "manus",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "openmanus",
-            }
-        ],
-    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://openrouter.ai/api/v1/models/user",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for m in data.get("data", []):
+            m["name"] = _fmt_model_name(
+                m.get("name", m.get("id", "")),
+                m.get("pricing", {}),
+            )
+        return data
 
 
 @app.post("/v1/chat/completions")

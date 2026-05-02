@@ -9,7 +9,7 @@ cat > /config/.config/autostart/chromium.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Chromium
-Exec=/bin/bash -c "while true; do find /config/chromium-profile -maxdepth 1 -iname 'singleton*' -delete 2>/dev/null; /usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --disable-blink-features=AutomationControlled --remote-debugging-port=9222 --remote-allow-origins='*' --user-data-dir=/config/chromium-profile https://www.fidelity.com; sleep 3; done"
+Exec=/bin/bash -c "while true; do find /config/chromium-profile -maxdepth 1 -iname 'singleton*' -delete 2>/dev/null; /usr/lib/chromium/chromium --no-first-run --no-default-browser-check --disable-gpu --no-sandbox --disable-dev-shm-usage --disable-blink-features=AutomationControlled --proxy-server=socks5://10.0.5.1:1080 --remote-debugging-port=9222 --remote-allow-origins='*' --user-data-dir=/config/chromium-profile https://www.fidelity.com; sleep 3; done"
 Hidden=false
 NoDisplay=false
 X-MATE-Autostart-enabled=true

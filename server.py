@@ -2,6 +2,7 @@
 OpenAI-compatible HTTP API wrapper around OpenManus Manus agent.
 Runs on 0.0.0.0:8000 via uvicorn.
 """
+
 import asyncio
 import contextlib
 import os
@@ -11,12 +12,18 @@ import json
 import logging
 import importlib.util
 import sys
-import inspect
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+import subprocess as _subprocess
+
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import (
+    JSONResponse,
+    StreamingResponse,
+    HTMLResponse,
+    PlainTextResponse,
+)
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
@@ -43,9 +50,15 @@ def _derive_ws_url(base_url: str) -> str:
 class ClawdTalkBridge:
     def __init__(self) -> None:
         self.api_key = os.environ.get("CLAWDTALK_API_KEY", "").strip()
-        self.server_url = os.environ.get("CLAWDTALK_SERVER_URL", "https://clawdtalk.com").rstrip("/")
-        self.ws_url = (os.environ.get("CLAWDTALK_WS_URL", "") or _derive_ws_url(self.server_url)).strip()
-        self.agent_name = os.environ.get("CLAWDTALK_AGENT_NAME", "OpenManus").strip() or "OpenManus"
+        self.server_url = os.environ.get(
+            "CLAWDTALK_SERVER_URL", "https://clawdtalk.com"
+        ).rstrip("/")
+        self.ws_url = (
+            os.environ.get("CLAWDTALK_WS_URL", "") or _derive_ws_url(self.server_url)
+        ).strip()
+        self.agent_name = (
+            os.environ.get("CLAWDTALK_AGENT_NAME", "OpenManus").strip() or "OpenManus"
+        )
         self.owner_name = os.environ.get("CLAWDTALK_OWNER_NAME", "").strip()
         self.greeting = os.environ.get("CLAWDTALK_GREETING", "").strip()
         self.enabled = bool(self.api_key)
@@ -95,7 +108,9 @@ class ClawdTalkBridge:
             return
         self.available = True
         self._task = asyncio.create_task(self._run_forever())
-        logger.info("ClawdTalk bridge enabled | server=%s ws=%s", self.server_url, self.ws_url)
+        logger.info(
+            "ClawdTalk bridge enabled | server=%s ws=%s", self.server_url, self.ws_url
+        )
 
     async def stop(self) -> None:
         if self._task:
@@ -130,7 +145,9 @@ class ClawdTalkBridge:
             except Exception as e:
                 self.connected = False
                 self.last_error = str(e)
-                logger.warning("ClawdTalk websocket error (retry in %ds): %s", backoff, e)
+                logger.warning(
+                    "ClawdTalk websocket error (retry in %ds): %s", backoff, e
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300)
 
@@ -159,7 +176,9 @@ class ClawdTalkBridge:
                 continue
 
             if event in {"ping", "heartbeat"} and payload.get("call_id"):
-                await self._send_json(websocket, {"type": "pong", "call_id": payload["call_id"]})
+                await self._send_json(
+                    websocket, {"type": "pong", "call_id": payload["call_id"]}
+                )
 
     async def _handle_message(self, websocket, payload: dict) -> None:
         call_id = str(payload["call_id"])
@@ -173,14 +192,17 @@ class ClawdTalkBridge:
 
         messages = history
         if len(history) == 1 and self.greeting:
-            messages = [{
-                "role": "system",
-                "content": (
-                    f"You are speaking over a live ClawdTalk phone call as {self.agent_name}. "
-                    f"The human caller is {self.owner_name or 'the user'}. "
-                    f"Keep answers concise and natural for voice. Opening greeting: {self.greeting}"
-                ),
-            }, *history]
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are speaking over a live ClawdTalk phone call as {self.agent_name}. "
+                        f"The human caller is {self.owner_name or 'the user'}. "
+                        f"Keep answers concise and natural for voice. Opening greeting: {self.greeting}"
+                    ),
+                },
+                *history,
+            ]
 
         try:
             answer = await run_manus_agent(
@@ -195,7 +217,9 @@ class ClawdTalkBridge:
 
         history.append({"role": "assistant", "content": answer})
         history[:] = history[-20:]
-        await self._send_json(websocket, {"type": "response", "call_id": call_id, "text": answer})
+        await self._send_json(
+            websocket, {"type": "response", "call_id": call_id, "text": answer}
+        )
 
     async def _send_json(self, websocket, payload: dict) -> None:
         async with self._send_lock:
@@ -226,6 +250,7 @@ clawdtalk_bridge = ClawdTalkBridge()
 # Settings helpers
 # ---------------------------------------------------------------------------
 
+
 def get_settings() -> dict:
     if SETTINGS_FILE.exists():
         try:
@@ -244,40 +269,53 @@ def write_settings(s: dict) -> None:
 # OpenWebUI sync helpers
 # ---------------------------------------------------------------------------
 
+
 def _py_sig(props: dict, required: list) -> tuple:
     """Return (signature_parts, param_doc_lines, param_dict_str) for a tool."""
-    type_map = {"string": ("str", '""'), "integer": ("int", "0"), "number": ("float", "0.0"),
-                "boolean": ("bool", "False"), "array": ("list", "[]"), "object": ("dict", "{}")}
+    type_map = {
+        "string": ("str", '""'),
+        "integer": ("int", "0"),
+        "number": ("float", "0.0"),
+        "boolean": ("bool", "False"),
+        "array": ("list", "[]"),
+        "object": ("dict", "{}"),
+    }
     sig, docs = [], []
     for pname, pinfo in props.items():
         py_t, default = type_map.get(pinfo.get("type", "string"), ("str", '""'))
-        sig.append(f"{pname}: {py_t}" if pname in required else f"{pname}: {py_t} = {default}")
+        sig.append(
+            f"{pname}: {py_t}" if pname in required else f"{pname}: {py_t} = {default}"
+        )
         docs.append(f"        :param {pname}: {pinfo.get('description', '')}")
     param_dict = ", ".join(f'"{k}": {k}' for k in props)
     return sig, docs, param_dict
 
 
 def generate_owui_tool_code(file_stem: str, tools_info: list) -> str:
-    first_desc = tools_info[0].get("description", file_stem) if tools_info else file_stem
+    first_desc = (
+        tools_info[0].get("description", file_stem) if tools_info else file_stem
+    )
     methods = []
     for tool in tools_info:
         name = tool["name"]
         desc = tool.get("description", "")
         params = tool.get("parameters", {})
-        sig, docs, param_dict = _py_sig(params.get("properties", {}), params.get("required", []))
+        sig, docs, param_dict = _py_sig(
+            params.get("properties", {}), params.get("required", [])
+        )
         sig_str = ", ".join(sig)
         docs_str = "\n".join(docs) if docs else "        :return: tool output"
         methods.append(
-            f'    def {name}(self, {sig_str}) -> str:\n'
+            f"    def {name}(self, {sig_str}) -> str:\n"
             f'        """\n        {desc}\n{docs_str}\n        :return: tool output\n        """\n'
-            f'        import httpx\n'
-            f'        try:\n'
-            f'            r = httpx.post(\n'
+            f"        import httpx\n"
+            f"        try:\n"
+            f"            r = httpx.post(\n"
             f'                "http://openmanus-backend:8000/api/tools/{file_stem}/invoke",\n'
             f'                json={{"tool": "{name}", "params": {{{{{param_dict}}}}}}}, timeout=60)\n'
-            f'            d = r.json()\n'
+            f"            d = r.json()\n"
             f'            return str(d.get("error") or d.get("output", "(no output)"))\n'
-            f'        except Exception as e:\n'
+            f"        except Exception as e:\n"
             f'            return f"Error: {{e}}"\n'
         )
     return (
@@ -296,6 +334,7 @@ def _session_token(request: Request) -> str:
 
 async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
+
     try:
         from app.tool.base import BaseTool as _BT
     except Exception as e:
@@ -311,13 +350,17 @@ async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
         tools_info = [
-            {"name": getattr(obj(), "name", obj.__name__),
-             "description": getattr(obj(), "description", ""),
-             "parameters": getattr(obj(), "parameters", {})}
+            {
+                "name": getattr(obj(), "name", obj.__name__),
+                "description": getattr(obj(), "description", ""),
+                "parameters": getattr(obj(), "parameters", {}),
+            }
             for attr in dir(mod)
             for obj in [getattr(mod, attr)]
-            if isinstance(obj, type) and issubclass(obj, _BT)
-            and obj is not _BT and obj.__module__ == mod_name
+            if isinstance(obj, type)
+            and issubclass(obj, _BT)
+            and obj is not _BT
+            and obj.__module__ == mod_name
         ]
     except Exception as e:
         return False, f"Import error: {e}"
@@ -335,7 +378,11 @@ async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
             "content": code,
             "meta": {"description": tools_info[0]["description"], "manifest": {}},
         }
-        url = f"{owui_url}/api/v1/tools/id/{tool_id}/update" if exists else f"{owui_url}/api/v1/tools/create"
+        url = (
+            f"{owui_url}/api/v1/tools/id/{tool_id}/update"
+            if exists
+            else f"{owui_url}/api/v1/tools/create"
+        )
         r = await c.post(url, headers=hdrs, json=payload)
         if r.status_code < 300:
             return True, "Synced"
@@ -344,40 +391,56 @@ async def _owui_sync_one(stem: str, owui_url: str, token: str) -> tuple:
 
 async def _owui_delete_one(stem: str, owui_url: str, token: str) -> tuple:
     import httpx as _hx
+
     hdrs = {"Authorization": f"Bearer {token}"}
     async with _hx.AsyncClient(timeout=10) as c:
-        r = await c.delete(f"{owui_url}/api/v1/tools/id/{_owui_tool_id(stem)}/delete", headers=hdrs)
+        r = await c.delete(
+            f"{owui_url}/api/v1/tools/id/{_owui_tool_id(stem)}/delete", headers=hdrs
+        )
         return r.status_code in (200, 204, 404), f"HTTP {r.status_code}"
 
 
-async def _owui_install_fn(fn_id: str, fn_name: str, code: str, owui_url: str, token: str) -> tuple:
+async def _owui_install_fn(
+    fn_id: str, fn_name: str, code: str, owui_url: str, token: str
+) -> tuple:
     import httpx as _hx
+
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"id": fn_id, "name": fn_name, "content": code,
-               "meta": {"description": fn_name, "manifest": {}}}
+    payload = {
+        "id": fn_id,
+        "name": fn_name,
+        "content": code,
+        "meta": {"description": fn_name, "manifest": {}},
+    }
     async with _hx.AsyncClient(timeout=15) as c:
-        exists = (await c.get(f"{owui_url}/api/v1/functions/id/{fn_id}", headers=hdrs)).status_code == 200
-        url = f"{owui_url}/api/v1/functions/id/{fn_id}/update" if exists else f"{owui_url}/api/v1/functions/create"
+        exists = (
+            await c.get(f"{owui_url}/api/v1/functions/id/{fn_id}", headers=hdrs)
+        ).status_code == 200
+        url = (
+            f"{owui_url}/api/v1/functions/id/{fn_id}/update"
+            if exists
+            else f"{owui_url}/api/v1/functions/create"
+        )
         r = await c.post(url, headers=hdrs, json=payload)
         if r.status_code < 300:
             return True, "Installed"
         return False, f"HTTP {r.status_code}: {r.text[:200]}"
 
+
 # Patch the Manus system prompt at import time so the agent knows about the
 # shared noVNC browser environment the user can see at vnc.designflow.app
 try:
     import app.prompt.manus as manus_prompt
+
     manus_prompt.SYSTEM_PROMPT = (
         "You are OpenManus, an all-capable AI assistant, aimed at solving any task "
         "presented by the user. You have various tools at your disposal that you can "
         "call upon to efficiently complete complex requests.\n"
         "The initial directory is: {directory}\n\n"
-
         "IMPORTANT — Browser & noVNC setup:\n"
         "You have full control of a real Chromium browser running in a shared noVNC "
         "desktop. The user can see and interact with the same browser at "
         "https://vnc.designflow.app.\n\n"
-
         "RULES YOU MUST FOLLOW:\n"
         "1. Whenever you first use the browser on a task, immediately tell the user: "
         "'I have opened the browser. You can watch and interact with it at https://vnc.designflow.app'\n"
@@ -418,7 +481,6 @@ try:
         "   container — Python code cannot reach it. Use only browser_use tool actions.\n"
         "8. When downloading files, use the browser to navigate and click download buttons "
         "   directly. Check screenshots to confirm what is actually rendered before clicking.\n\n"
-
         "ERROR HANDLING — MANDATORY:\n"
         "9. When any tool call returns an error, immediately output the full error text to "
         "   the user verbatim, prefixed with '⚠️ Tool error:'. Do not silently swallow errors.\n"
@@ -440,6 +502,7 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # User tool loader
 # ---------------------------------------------------------------------------
+
 
 def load_user_tools() -> list:
     """
@@ -523,12 +586,18 @@ async def run_manus_agent(
         agent.messages = prior_messages
 
     all_user_tools = load_user_tools()
-    user_tools = [t for t in all_user_tools if t.name in selected_tool_names] if selected_tool_names else all_user_tools
+    user_tools = (
+        [t for t in all_user_tools if t.name in selected_tool_names]
+        if selected_tool_names
+        else all_user_tools
+    )
     for tool in user_tools:
         try:
             agent.available_tools.add_tool(tool)
         except Exception as e:
-            logger.warning(f"Could not inject user tool '{getattr(tool, 'name', tool)}': {e}")
+            logger.warning(
+                f"Could not inject user tool '{getattr(tool, 'name', tool)}': {e}"
+            )
 
     try:
         result = await agent.run(user_prompt)
@@ -1523,12 +1592,11 @@ class MyCustomTool(BaseTool):
 # Tool Manager API endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/admin/tools", response_class=HTMLResponse)
 async def tool_manager_ui():
     return TOOL_MANAGER_HTML
 
-
-from fastapi.responses import PlainTextResponse
 
 @app.get("/admin/functions/save_to_knowledge.py", response_class=PlainTextResponse)
 async def get_save_to_knowledge_function():
@@ -1543,7 +1611,9 @@ async def get_run_tool_function():
 @app.get("/api/tools")
 async def list_tools():
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    names = sorted(p.stem for p in USER_TOOLS_DIR.glob("*.py") if not p.name.startswith("_"))
+    names = sorted(
+        p.stem for p in USER_TOOLS_DIR.glob("*.py") if not p.name.startswith("_")
+    )
     return names
 
 
@@ -1554,6 +1624,7 @@ async def tools_status():
     results = []
     try:
         from app.tool.base import BaseTool
+
         base_available = True
     except Exception:
         base_available = False
@@ -1575,14 +1646,20 @@ async def tools_status():
             spec.loader.exec_module(mod)
             for attr_name in dir(mod):
                 obj = getattr(mod, attr_name)
-                if (isinstance(obj, type) and issubclass(obj, BaseTool)
-                        and obj is not BaseTool and obj.__module__ == module_name):
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, BaseTool)
+                    and obj is not BaseTool
+                    and obj.__module__ == module_name
+                ):
                     instance = obj()
-                    entry["tools"].append({
-                        "name": getattr(instance, "name", attr_name),
-                        "description": getattr(instance, "description", ""),
-                        "parameters": getattr(instance, "parameters", {}),
-                    })
+                    entry["tools"].append(
+                        {
+                            "name": getattr(instance, "name", attr_name),
+                            "description": getattr(instance, "description", ""),
+                            "parameters": getattr(instance, "parameters", {}),
+                        }
+                    )
         except Exception as e:
             entry["error"] = str(e)
         results.append(entry)
@@ -1599,7 +1676,7 @@ async def invoke_tool(name: str, request: Request):
         raise HTTPException(status_code=404, detail="Tool not found")
 
     body = await request.json()
-    tool_name = body.get("tool")   # which tool class (by name) to invoke
+    tool_name = body.get("tool")  # which tool class (by name) to invoke
     params = body.get("params", {})
 
     try:
@@ -1621,19 +1698,27 @@ async def invoke_tool(name: str, request: Request):
     instance = None
     for attr_name in dir(mod):
         obj = getattr(mod, attr_name)
-        if (isinstance(obj, type) and issubclass(obj, BaseTool)
-                and obj is not BaseTool and obj.__module__ == module_name):
+        if (
+            isinstance(obj, type)
+            and issubclass(obj, BaseTool)
+            and obj is not BaseTool
+            and obj.__module__ == module_name
+        ):
             inst = obj()
             if tool_name is None or getattr(inst, "name", None) == tool_name:
                 instance = inst
                 break
 
     if instance is None:
-        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found in {name}.py")
+        raise HTTPException(
+            status_code=404, detail=f"Tool '{tool_name}' not found in {name}.py"
+        )
 
     try:
         result = await instance.execute(**params)
-        return {"output": str(result.output) if hasattr(result, "output") else str(result)}
+        return {
+            "output": str(result.output) if hasattr(result, "output") else str(result)
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -1695,6 +1780,7 @@ async def delete_tool(name: str, request: Request):
 # OpenWebUI integration endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/owui/settings")
 async def owui_get_settings(request: Request):
     s = get_settings()
@@ -1704,14 +1790,20 @@ async def owui_get_settings(request: Request):
     if token:
         try:
             import httpx as _hx
+
             async with _hx.AsyncClient(timeout=5) as c:
-                r = await c.get(f"{owui_url}/api/v1/tools/",
-                                headers={"Authorization": f"Bearer {token}"})
+                r = await c.get(
+                    f"{owui_url}/api/v1/tools/",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
                 connected = r.status_code == 200
         except Exception:
             pass
-    return {"owui_url": owui_url, "connected": connected,
-            "synced_tools": s.get("synced_tools", [])}
+    return {
+        "owui_url": owui_url,
+        "connected": connected,
+        "synced_tools": s.get("synced_tools", []),
+    }
 
 
 @app.post("/api/owui/settings")
@@ -1728,17 +1820,28 @@ async def owui_save_settings(request: Request):
 async def owui_test(request: Request):
     s = get_settings()
     body = await request.json()
-    owui_url = body.get("owui_url", s.get("owui_url", "http://open-webui:8080")).rstrip("/")
+    owui_url = body.get("owui_url", s.get("owui_url", "http://open-webui:8080")).rstrip(
+        "/"
+    )
     token = _session_token(request)
     if not token:
-        return {"ok": False, "message": "No session cookie — are you logged into OpenWebUI?"}
+        return {
+            "ok": False,
+            "message": "No session cookie — are you logged into OpenWebUI?",
+        }
     import httpx as _hx
+
     try:
         async with _hx.AsyncClient(timeout=10) as c:
-            r = await c.get(f"{owui_url}/api/v1/tools/",
-                            headers={"Authorization": f"Bearer {token}"})
+            r = await c.get(
+                f"{owui_url}/api/v1/tools/",
+                headers={"Authorization": f"Bearer {token}"},
+            )
             if r.status_code == 200:
-                return {"ok": True, "message": f"Connected — {len(r.json())} tool(s) registered in OpenWebUI"}
+                return {
+                    "ok": True,
+                    "message": f"Connected — {len(r.json())} tool(s) registered in OpenWebUI",
+                }
             return {"ok": False, "message": f"HTTP {r.status_code}: {r.text[:120]}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
@@ -1748,7 +1851,9 @@ async def owui_test(request: Request):
 async def owui_sync_all(request: Request):
     token = _session_token(request)
     if not token:
-        raise HTTPException(status_code=401, detail="No session cookie — are you logged into OpenWebUI?")
+        raise HTTPException(
+            status_code=401, detail="No session cookie — are you logged into OpenWebUI?"
+        )
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
     USER_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1770,17 +1875,29 @@ async def owui_bootstrap(request: Request):
     """Verify the user's existing session cookie works against OpenWebUI."""
     token = _session_token(request)
     if not token:
-        return {"ok": False, "message": "No OpenWebUI session cookie found — make sure you are logged into OpenWebUI first."}
+        return {
+            "ok": False,
+            "message": "No OpenWebUI session cookie found — make sure you are logged into OpenWebUI first.",
+        }
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
     import httpx as _hx
+
     try:
         async with _hx.AsyncClient(timeout=10) as c:
-            r = await c.get(f"{owui_url}/api/v1/tools/",
-                            headers={"Authorization": f"Bearer {token}"})
+            r = await c.get(
+                f"{owui_url}/api/v1/tools/",
+                headers={"Authorization": f"Bearer {token}"},
+            )
             if r.status_code == 200:
-                return {"ok": True, "message": f"Session verified — {len(r.json())} tool(s) in OpenWebUI."}
-            return {"ok": False, "message": f"Session check failed: HTTP {r.status_code}"}
+                return {
+                    "ok": True,
+                    "message": f"Session verified — {len(r.json())} tool(s) in OpenWebUI.",
+                }
+            return {
+                "ok": False,
+                "message": f"Session check failed: HTTP {r.status_code}",
+            }
     except Exception as e:
         return {"ok": False, "message": f"Error: {e}"}
 
@@ -1789,14 +1906,23 @@ async def owui_bootstrap(request: Request):
 async def owui_install_function(func_id: str, request: Request):
     token = _session_token(request)
     if not token:
-        raise HTTPException(status_code=401, detail="No session cookie — are you logged into OpenWebUI?")
+        raise HTTPException(
+            status_code=401, detail="No session cookie — are you logged into OpenWebUI?"
+        )
     s = get_settings()
     owui_url = s.get("owui_url", "http://open-webui:8080")
     if func_id == "run_tool":
-        ok, msg = await _owui_install_fn("run_tool", "Run Tool", RUN_TOOL_FUNCTION, owui_url, token)
+        ok, msg = await _owui_install_fn(
+            "run_tool", "Run Tool", RUN_TOOL_FUNCTION, owui_url, token
+        )
     elif func_id == "save_to_knowledge":
-        ok, msg = await _owui_install_fn("save_to_knowledge", "Save to Knowledge",
-                                          SAVE_TO_KNOWLEDGE_FUNCTION, owui_url, token)
+        ok, msg = await _owui_install_fn(
+            "save_to_knowledge",
+            "Save to Knowledge",
+            SAVE_TO_KNOWLEDGE_FUNCTION,
+            owui_url,
+            token,
+        )
     else:
         raise HTTPException(status_code=404, detail="Unknown function")
     return {"ok": ok, "message": msg}
@@ -1820,10 +1946,14 @@ async def clawdtalk_status():
 @app.post("/api/clawdtalk/calls")
 async def clawdtalk_create_call(request: Request):
     if not clawdtalk_bridge.enabled:
-        raise HTTPException(status_code=503, detail="ClawdTalk bridge is not configured")
+        raise HTTPException(
+            status_code=503, detail="ClawdTalk bridge is not configured"
+        )
     payload = await request.json()
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+        raise HTTPException(
+            status_code=400, detail="Request body must be a JSON object"
+        )
     if "to" not in payload:
         raise HTTPException(status_code=400, detail="Missing required field: to")
     return await clawdtalk_bridge.create_call(payload)
@@ -1889,6 +2019,7 @@ async def downloads_browser(request: Request, subpath: str = ""):
     if target.is_file():
         # Serve the file for download
         from fastapi.responses import FileResponse
+
         mime, _ = mimetypes.guess_type(target.name)
         return FileResponse(
             path=str(target),
@@ -1901,14 +2032,18 @@ async def downloads_browser(request: Request, subpath: str = ""):
     so_far = ""
     for part in rel.parts:
         so_far = f"{so_far}/{part}" if so_far else part
-        parts.append(f"<a href='/admin/downloads/{so_far}'>{html_module.escape(part)}</a>")
+        parts.append(
+            f"<a href='/admin/downloads/{so_far}'>{html_module.escape(part)}</a>"
+        )
     breadcrumb = " / ".join(parts)
 
     rows = []
     if rel != Path("."):
         parent = str(rel.parent) if rel.parent != Path(".") else ""
         up_href = f"/admin/downloads/{parent}" if parent else "/admin/downloads"
-        rows.append(f"<tr><td><a href='{up_href}'>.. (up)</a></td><td></td><td></td><td></td></tr>")
+        rows.append(
+            f"<tr><td><a href='{up_href}'>.. (up)</a></td><td></td><td></td><td></td></tr>"
+        )
 
     entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
     for entry in entries:
@@ -1917,14 +2052,24 @@ async def downloads_browser(request: Request, subpath: str = ""):
         href = f"/admin/downloads/{rel_path}"
         mod = datetime.fromtimestamp(entry.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         if entry.is_dir():
-            rows.append(f"<tr><td class='dir'><a href='{href}'>{name}/</a></td><td></td><td class='size'>{mod}</td><td></td></tr>")
+            rows.append(
+                f"<tr><td class='dir'><a href='{href}'>{name}/</a></td><td></td><td class='size'>{mod}</td><td></td></tr>"
+            )
         else:
             size = entry.stat().st_size
-            size_str = f"{size/1024:.1f} KB" if size < 1_048_576 else f"{size/1_048_576:.1f} MB"
-            rows.append(f"<tr><td><a href='{href}'>{name}</a></td><td class='size'>{size_str}</td><td class='size'>{mod}</td><td><a href='{href}'>⬇ download</a></td></tr>")
+            size_str = (
+                f"{size / 1024:.1f} KB"
+                if size < 1_048_576
+                else f"{size / 1_048_576:.1f} MB"
+            )
+            rows.append(
+                f"<tr><td><a href='{href}'>{name}</a></td><td class='size'>{size_str}</td><td class='size'>{mod}</td><td><a href='{href}'>⬇ download</a></td></tr>"
+            )
 
     if not entries:
-        rows.append("<tr><td colspan='4' class='empty'>No files yet. Ask the agent to download something.</td></tr>")
+        rows.append(
+            "<tr><td colspan='4' class='empty'>No files yet. Ask the agent to download something.</td></tr>"
+        )
 
     html = _DOWNLOADS_HTML.format(breadcrumb=breadcrumb, rows="\n".join(rows))
     return HTMLResponse(html)
@@ -1933,8 +2078,6 @@ async def downloads_browser(request: Request, subpath: str = ""):
 # ---------------------------------------------------------------------------
 # Google Drive — OAuth setup + rclone sync
 # ---------------------------------------------------------------------------
-
-import subprocess as _subprocess
 
 RCLONE_CONFIG_DIR = Path("/app/rclone-config")
 RCLONE_CONFIG_FILE = RCLONE_CONFIG_DIR / "rclone.conf"
@@ -1962,9 +2105,7 @@ def _gdrive_configured() -> bool:
 
 
 def _rclone_available() -> bool:
-    return _subprocess.run(
-        ["rclone", "version"], capture_output=True
-    ).returncode == 0
+    return _subprocess.run(["rclone", "version"], capture_output=True).returncode == 0
 
 
 _GDRIVE_PAGE = """<!DOCTYPE html>
@@ -2013,16 +2154,21 @@ async def gdrive_page():
     configured = _gdrive_configured()
 
     if not rclone_ok:
-        return HTMLResponse(_GDRIVE_PAGE.format(
-            dot_class="red", status_text="rclone not installed",
-            body="<div class='error'>rclone is not installed in this container. Rebuild the Docker image to include it.</div>",
-            extra="",
-        ))
+        return HTMLResponse(
+            _GDRIVE_PAGE.format(
+                dot_class="red",
+                status_text="rclone not installed",
+                body="<div class='error'>rclone is not installed in this container. Rebuild the Docker image to include it.</div>",
+                extra="",
+            )
+        )
 
     if not client_id or not client_secret:
-        return HTMLResponse(_GDRIVE_PAGE.format(
-            dot_class="grey", status_text="Not configured",
-            body="""
+        return HTMLResponse(
+            _GDRIVE_PAGE.format(
+                dot_class="grey",
+                status_text="Not configured",
+                body="""
 <div class='setup-steps'>
   <p>To connect Google Drive you need a Google OAuth client set up for Drive access.</p>
   <ol>
@@ -2035,20 +2181,24 @@ async def gdrive_page():
   </ol>
   <p class='note'>These are the same credentials already used for Google Sign-In to this app. You just need to also enable the Drive API and add the redirect URI.</p>
 </div>""",
-            extra="",
-        ))
+                extra="",
+            )
+        )
 
     if configured:
         folder = _GDRIVE_FOLDER
-        return HTMLResponse(_GDRIVE_PAGE.format(
-            dot_class="green", status_text="Connected to Google Drive",
-            body=f"""
+        return HTMLResponse(
+            _GDRIVE_PAGE.format(
+                dot_class="green",
+                status_text="Connected to Google Drive",
+                body=f"""
 <p>Downloads sync automatically to <strong>{folder}/</strong> in your Google Drive after every Fidelity download.</p>
 <a href='/api/gdrive/sync' class='btn btn-primary' style='margin-right:8px'>Sync now</a>
 <a href='/api/gdrive/disconnect' class='btn btn-secondary'>Disconnect</a>
 <p class='note'>Destination folder: My Drive / {folder}</p>""",
-            extra="",
-        ))
+                extra="",
+            )
+        )
 
     auth_url = (
         "https://accounts.google.com/o/oauth2/v2/auth"
@@ -2059,49 +2209,66 @@ async def gdrive_page():
         "&access_type=offline"
         "&prompt=consent"
     )
-    return HTMLResponse(_GDRIVE_PAGE.format(
-        dot_class="grey", status_text="Not connected",
-        body=f"""
+    return HTMLResponse(
+        _GDRIVE_PAGE.format(
+            dot_class="grey",
+            status_text="Not connected",
+            body=f"""
 <p>Connect your Google Drive so Fidelity downloads save there automatically.</p>
 <a href='{auth_url}' class='btn btn-primary'>Connect Google Drive</a>
 <p class='note'>You'll be asked to sign in with Google and grant access to Google Drive.</p>""",
-        extra="",
-    ))
+            extra="",
+        )
+    )
 
 
 @app.get("/api/gdrive/callback")
 async def gdrive_callback(code: str = "", error: str = ""):
     if error:
-        return HTMLResponse(f"<h2>Error: {error}</h2><p><a href='/admin/gdrive'>Back</a></p>")
+        return HTMLResponse(
+            f"<h2>Error: {error}</h2><p><a href='/admin/gdrive'>Back</a></p>"
+        )
     if not code:
-        return HTMLResponse("<h2>Missing code</h2><p><a href='/admin/gdrive'>Back</a></p>")
+        return HTMLResponse(
+            "<h2>Missing code</h2><p><a href='/admin/gdrive'>Back</a></p>"
+        )
 
     client_id = _gdrive_client_id()
     client_secret = _gdrive_client_secret()
 
-    import httpx, json as _json
+    import httpx
+    import json as _json
     from datetime import datetime, timezone, timedelta
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post("https://oauth2.googleapis.com/token", data={
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": _GDRIVE_REDIRECT,
-            "grant_type": "authorization_code",
-        })
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": _GDRIVE_REDIRECT,
+                "grant_type": "authorization_code",
+            },
+        )
 
     if resp.status_code != 200:
-        return HTMLResponse(f"<h2>Token exchange failed</h2><pre>{resp.text}</pre><p><a href='/admin/gdrive'>Back</a></p>")
+        return HTMLResponse(
+            f"<h2>Token exchange failed</h2><pre>{resp.text}</pre><p><a href='/admin/gdrive'>Back</a></p>"
+        )
 
     tokens = resp.json()
-    expiry = (datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
-    token_json = _json.dumps({
-        "access_token": tokens["access_token"],
-        "token_type": tokens.get("token_type", "Bearer"),
-        "refresh_token": tokens.get("refresh_token", ""),
-        "expiry": expiry,
-    })
+    expiry = (
+        datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+    token_json = _json.dumps(
+        {
+            "access_token": tokens["access_token"],
+            "token_type": tokens.get("token_type", "Bearer"),
+            "refresh_token": tokens.get("refresh_token", ""),
+            "expiry": expiry,
+        }
+    )
 
     RCLONE_CONFIG_FILE.write_text(
         f"[gdrive]\n"
@@ -2137,26 +2304,40 @@ async def gdrive_status():
 @app.get("/api/gdrive/sync")
 async def gdrive_sync():
     if not _gdrive_configured():
-        return HTMLResponse("<h2>Not connected</h2><p><a href='/admin/gdrive'>Set up Google Drive first</a></p>")
+        return HTMLResponse(
+            "<h2>Not connected</h2><p><a href='/admin/gdrive'>Set up Google Drive first</a></p>"
+        )
     if not _rclone_available():
         return JSONResponse({"ok": False, "error": "rclone not available"})
 
     proc = _subprocess.run(
-        ["rclone", "copy", str(DOWNLOADS_DIR), f"{_GDRIVE_REMOTE}:{_GDRIVE_FOLDER}",
-         "--config", str(RCLONE_CONFIG_FILE), "--create-empty-src-dirs", "-v"],
-        capture_output=True, text=True, timeout=120,
+        [
+            "rclone",
+            "copy",
+            str(DOWNLOADS_DIR),
+            f"{_GDRIVE_REMOTE}:{_GDRIVE_FOLDER}",
+            "--config",
+            str(RCLONE_CONFIG_FILE),
+            "--create-empty-src-dirs",
+            "-v",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     ok = proc.returncode == 0
     if "text/html" in (proc.stderr or ""):
-        return JSONResponse({"ok": ok, "stdout": proc.stdout[-3000:], "stderr": proc.stderr[-3000:]})
+        return JSONResponse(
+            {"ok": ok, "stdout": proc.stdout[-3000:], "stderr": proc.stderr[-3000:]}
+        )
     return HTMLResponse(f"""
 <html><head><meta charset='utf-8'>
 <style>body{{font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 24px}}
 pre{{background:#f3f4f6;padding:16px;border-radius:6px;overflow-x:auto;font-size:.85rem}}
 .btn{{display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none}}</style>
 </head><body>
-<h2>{'✅ Sync complete' if ok else '❌ Sync failed'}</h2>
-<pre>{proc.stdout or ''}{proc.stderr or ''}</pre>
+<h2>{"✅ Sync complete" if ok else "❌ Sync failed"}</h2>
+<pre>{proc.stdout or ""}{proc.stderr or ""}</pre>
 <a href='/admin/gdrive' class='btn'>Back</a>
 </body></html>""")
 
@@ -2166,12 +2347,14 @@ async def gdrive_disconnect():
     if RCLONE_CONFIG_FILE.exists():
         RCLONE_CONFIG_FILE.unlink()
     from fastapi.responses import RedirectResponse
+
     return RedirectResponse("/admin/gdrive")
 
 
 # ---------------------------------------------------------------------------
 # Core API
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health")
 async def health():
@@ -2185,12 +2368,14 @@ def _fmt_model_name(raw_name: str, pricing: dict) -> str:
     try:
         inp = float(pricing.get("prompt", 0)) * 1_000_000
         out = float(pricing.get("completion", 0)) * 1_000_000
+
         def _p(v):
             if v == 0:
                 return "free"
             # Show up to 3 sig figs, strip trailing zeros
             s = f"{v:.3g}"
             return f"${s}"
+
         name = f"{name} {_p(inp)}/{_p(out)}"
     except Exception:
         pass
@@ -2199,7 +2384,9 @@ def _fmt_model_name(raw_name: str, pricing: dict) -> str:
 
 @app.get("/v1/models")
 async def list_models():
-    import os, httpx
+    import os
+    import httpx
+
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(
@@ -2233,7 +2420,12 @@ async def chat_completions(request: Request):
         if not prompt:
             return JSONResponse(
                 status_code=400,
-                content={"error": {"message": "No user message found", "type": "invalid_request_error"}},
+                content={
+                    "error": {
+                        "message": "No user message found",
+                        "type": "invalid_request_error",
+                    }
+                },
             )
 
         logger.info(
@@ -2261,7 +2453,6 @@ async def chat_completions(request: Request):
             progress_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
             async def _run_with_sink() -> str:
-                import re as _re
                 try:
                     from loguru import logger as _loguru
                 except ImportError:
@@ -2273,8 +2464,18 @@ async def chat_completions(request: Request):
                         selected_tool_names=_owui_selected or None,
                     )
 
-                _MARKERS = ("Executing step", "✨", "🛠️", "🧰", "🎯", "🚨",
-                            "Token limit", "stuck", "Error", "error")
+                _MARKERS = (
+                    "Executing step",
+                    "✨",
+                    "🛠️",
+                    "🧰",
+                    "🎯",
+                    "🚨",
+                    "Token limit",
+                    "stuck",
+                    "Error",
+                    "error",
+                )
 
                 def _sink(record):
                     msg = record["message"].strip()
@@ -2306,8 +2507,9 @@ async def chat_completions(request: Request):
 
             def _fmt(raw: str) -> str | None:
                 import re as _re
+
                 if "Executing step" in raw:
-                    m = _re.search(r'Executing step (\d+)/\d+', raw)
+                    m = _re.search(r"Executing step (\d+)/\d+", raw)
                     return f"\n**Step {m.group(1)}**\n" if m else None
                 if "✨" in raw and "thoughts" in raw:
                     thought = raw.split("thoughts:", 1)[-1].strip()
@@ -2336,7 +2538,9 @@ async def chat_completions(request: Request):
                     try:
                         raw = await asyncio.wait_for(progress_q.get(), timeout=300.0)
                     except asyncio.TimeoutError:
-                        yield _chunk({"content": "\n⏱️ Timed out waiting for agent step.\n"})
+                        yield _chunk(
+                            {"content": "\n⏱️ Timed out waiting for agent step.\n"}
+                        )
                         break
                     if raw is None:
                         break
@@ -2366,10 +2570,13 @@ async def chat_completions(request: Request):
 
         try:
             from app.llm import LLM
+
             llm = LLM()
             if requested_model and requested_model not in ("manus", "openmanus"):
                 llm.model = requested_model
-            prompt_tokens = llm.count_tokens(" ".join(m.get("content", "") or "" for m in messages))
+            prompt_tokens = llm.count_tokens(
+                " ".join(m.get("content", "") or "" for m in messages)
+            )
             completion_tokens = llm.count_tokens(answer or "")
         except Exception:
             prompt_tokens = len(prompt.split())

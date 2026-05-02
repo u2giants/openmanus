@@ -7,6 +7,7 @@ manually; these tools take over from there using the same browser session.
 Requires: the novnc container to be running with Chromium on CDP port 9222.
 The CDP proxy inside novnc makes it reachable at http://novnc:9223.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,9 +38,18 @@ def _gdrive_sync_if_configured() -> dict:
         return {"gdrive_sync": "skipped (not configured)"}
     try:
         proc = subprocess.run(
-            ["rclone", "copy", "/app/downloads", f"gdrive:{_GDRIVE_FOLDER}",
-             "--config", _RCLONE_CONFIG, "--create-empty-src-dirs"],
-            capture_output=True, text=True, timeout=60,
+            [
+                "rclone",
+                "copy",
+                "/app/downloads",
+                f"gdrive:{_GDRIVE_FOLDER}",
+                "--config",
+                _RCLONE_CONFIG,
+                "--create-empty-src-dirs",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         return {
             "gdrive_sync": "ok" if proc.returncode == 0 else "failed",
@@ -66,6 +76,7 @@ def _err(msg: str) -> ToolResult:
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool 1 — attach & wait for login
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class FidelityAttachAndWait(BaseTool):
     name: str = "fidelity_attach_and_wait"
@@ -101,7 +112,6 @@ class FidelityAttachAndWait(BaseTool):
         **_,
     ) -> ToolResult:
         def _sync():
-            from playwright.sync_api import sync_playwright
             from fidelity_mcp.browser import FidelityBrowser
 
             fb = FidelityBrowser()
@@ -122,6 +132,7 @@ class FidelityAttachAndWait(BaseTool):
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool 2 — download statements
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class FidelityDownloadStatements(BaseTool):
     name: str = "fidelity_download_statements"
@@ -192,6 +203,7 @@ class FidelityDownloadStatements(BaseTool):
 # Tool 3 — download positions CSV
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class FidelityDownloadPositions(BaseTool):
     name: str = "fidelity_download_positions"
     description: str = (
@@ -242,6 +254,7 @@ class FidelityDownloadPositions(BaseTool):
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool 4 — navigate to any Fidelity page
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class FidelityGoTo(BaseTool):
     name: str = "fidelity_goto"

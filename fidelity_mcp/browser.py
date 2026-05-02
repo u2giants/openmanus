@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Browser, BrowserContext, Download, Page, Playwright, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Download,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 
 FID_MONTH_NAMES = {
@@ -50,17 +57,26 @@ class FidelityBrowser:
         self.cdp_url: str | None = None
 
     # ---------- lifecycle ----------
-    def attach(self, cdp_url: str = "http://127.0.0.1:9222", context_index: int = 0, page_index: int = 0) -> AttachmentInfo:
+    def attach(
+        self,
+        cdp_url: str = "http://127.0.0.1:9222",
+        context_index: int = 0,
+        page_index: int = 0,
+    ) -> AttachmentInfo:
         self.close()
         self._playwright = sync_playwright().start()
         self.browser = self._playwright.chromium.connect_over_cdp(cdp_url)
         self.cdp_url = cdp_url
 
         if not self.browser.contexts:
-            raise RuntimeError("Connected to Chromium, but there are no browser contexts yet.")
+            raise RuntimeError(
+                "Connected to Chromium, but there are no browser contexts yet."
+            )
 
         if context_index < 0 or context_index >= len(self.browser.contexts):
-            raise IndexError(f"context_index {context_index} is out of range; found {len(self.browser.contexts)} context(s).")
+            raise IndexError(
+                f"context_index {context_index} is out of range; found {len(self.browser.contexts)} context(s)."
+            )
 
         self.context = self.browser.contexts[context_index]
 
@@ -68,7 +84,9 @@ class FidelityBrowser:
             self.page = self.context.new_page()
         else:
             if page_index < 0 or page_index >= len(self.context.pages):
-                raise IndexError(f"page_index {page_index} is out of range; found {len(self.context.pages)} page(s).")
+                raise IndexError(
+                    f"page_index {page_index} is out of range; found {len(self.context.pages)} page(s)."
+                )
             self.page = self.context.pages[page_index]
 
         return AttachmentInfo(
@@ -99,7 +117,9 @@ class FidelityBrowser:
     # ---------- helpers ----------
     def require_page(self) -> Page:
         if self.page is None:
-            raise RuntimeError("No browser page is attached. Run attach_visible_browser first.")
+            raise RuntimeError(
+                "No browser page is attached. Run attach_visible_browser first."
+            )
         return self.page
 
     def safe_title(self, page: Page) -> str:
@@ -114,13 +134,15 @@ class FidelityBrowser:
         out: list[dict[str, Any]] = []
         for c_idx, ctx in enumerate(self.browser.contexts):
             for p_idx, page in enumerate(ctx.pages):
-                out.append({
-                    "context_index": c_idx,
-                    "page_index": p_idx,
-                    "title": self.safe_title(page),
-                    "url": page.url,
-                    "active": ctx == self.context and page == self.page,
-                })
+                out.append(
+                    {
+                        "context_index": c_idx,
+                        "page_index": p_idx,
+                        "title": self.safe_title(page),
+                        "url": page.url,
+                        "active": ctx == self.context and page == self.page,
+                    }
+                )
         return out
 
     def use_page(self, context_index: int = 0, page_index: int = 0) -> dict[str, Any]:
@@ -158,7 +180,9 @@ class FidelityBrowser:
             except Exception:
                 pass
 
-    def wait_for_manual_login(self, timeout_seconds: int = 600, poll_seconds: float = 2.0) -> dict[str, Any]:
+    def wait_for_manual_login(
+        self, timeout_seconds: int = 600, poll_seconds: float = 2.0
+    ) -> dict[str, Any]:
         page = self.require_page()
         deadline = time.time() + timeout_seconds
         last_url = page.url
@@ -175,7 +199,11 @@ class FidelityBrowser:
                     for text in text_checks:
                         try:
                             if page.get_by_text(text).first.is_visible(timeout=750):
-                                return {"logged_in": True, "url": page.url, "matched_text": text}
+                                return {
+                                    "logged_in": True,
+                                    "url": page.url,
+                                    "matched_text": text,
+                                }
                         except Exception:
                             pass
             except Exception:
@@ -195,13 +223,19 @@ class FidelityBrowser:
 
     def open_documents_hub(self) -> dict[str, Any]:
         page = self.require_page()
-        page.goto("https://digital.fidelity.com/ftgw/digital/portfolio/documents/dochub", wait_until="domcontentloaded")
+        page.goto(
+            "https://digital.fidelity.com/ftgw/digital/portfolio/documents/dochub",
+            wait_until="domcontentloaded",
+        )
         self.wait_for_loading_signs(timeout_ms=15000)
         return {"title": self.safe_title(page), "url": page.url}
 
     def open_positions_page(self) -> dict[str, Any]:
         page = self.require_page()
-        page.goto("https://digital.fidelity.com/ftgw/digital/portfolio/positions", wait_until="domcontentloaded")
+        page.goto(
+            "https://digital.fidelity.com/ftgw/digital/portfolio/positions",
+            wait_until="domcontentloaded",
+        )
         self.wait_for_loading_signs(timeout_ms=15000)
         return {"title": self.safe_title(page), "url": page.url}
 
@@ -210,7 +244,9 @@ class FidelityBrowser:
         value = value.strip().replace("/", "-")
         return re.sub(r"[^A-Za-z0-9._ -]+", "_", value)
 
-    def _save_download(self, download: Download, out_dir: str, prefix: str | None = None) -> str:
+    def _save_download(
+        self, download: Download, out_dir: str, prefix: str | None = None
+    ) -> str:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         filename = download.suggested_filename
         if prefix:
@@ -246,7 +282,12 @@ class FidelityBrowser:
         saved_path = self._save_download(download, out_dir, prefix="positions")
         return {"saved_path": saved_path, "url": page.url}
 
-    def download_statements(self, date_yyyy_mm: str, out_dir: str = "./Statements", account_contains: str | None = None) -> dict[str, Any]:
+    def download_statements(
+        self,
+        date_yyyy_mm: str,
+        out_dir: str = "./Statements",
+        account_contains: str | None = None,
+    ) -> dict[str, Any]:
         """Download Fidelity statements for the requested month.
 
         Adapted from fidelity-api's existing statement downloader, but runs
@@ -283,18 +324,26 @@ class FidelityBrowser:
         page.get_by_role("menuitem", name=f"{target_year}").click(timeout=5000)
 
         try:
-            page.locator("statements-loading-skeleton div").nth(1).wait_for(state="hidden", timeout=20000)
+            page.locator("statements-loading-skeleton div").nth(1).wait_for(
+                state="hidden", timeout=20000
+            )
         except Exception:
             pass
 
         if page.get_by_text("There are no statements").is_visible():
-            return {"saved_files": [], "matched_rows": 0, "reason": "There are no statements for that year."}
+            return {
+                "saved_files": [],
+                "matched_rows": 0,
+                "reason": "There are no statements for that year.",
+            }
 
         try:
             if page.get_by_role("button", name="Load more results").is_visible():
                 while page.get_by_role("button", name="Load more results").is_visible():
                     try:
-                        page.get_by_role("button", name="Load more results").click(timeout=5000)
+                        page.get_by_role("button", name="Load more results").click(
+                            timeout=5000
+                        )
                         page.wait_for_timeout(500)
                     except PlaywrightTimeoutError:
                         break
@@ -326,8 +375,14 @@ class FidelityBrowser:
                     break
             if len(found_months) != 2:
                 continue
-            start_month = next((m for m, name in FID_MONTH_NAMES.items() if name == found_months[0]), None)
-            end_month = next((m for m, name in FID_MONTH_NAMES.items() if name == found_months[1]), None)
+            start_month = next(
+                (m for m, name in FID_MONTH_NAMES.items() if name == found_months[0]),
+                None,
+            )
+            end_month = next(
+                (m for m, name in FID_MONTH_NAMES.items() if name == found_months[1]),
+                None,
+            )
             if start_month is None or end_month is None:
                 continue
             if start_month <= target_month <= end_month:

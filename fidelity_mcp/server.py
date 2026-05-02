@@ -71,12 +71,16 @@ def launch_visible_chrome(
 
     global _chrome_proc
     _reap_chrome()
-    _chrome_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return _json({
-        "launched": True,
-        "command": cmd,
-        "next_step": f"Open the VNC desktop, log in to Fidelity if needed, then attach to http://127.0.0.1:{remote_debugging_port}",
-    })
+    _chrome_proc = subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    return _json(
+        {
+            "launched": True,
+            "command": cmd,
+            "next_step": f"Open the VNC desktop, log in to Fidelity if needed, then attach to http://127.0.0.1:{remote_debugging_port}",
+        }
+    )
 
 
 @mcp.tool()
@@ -86,7 +90,9 @@ def attach_visible_browser(
     page_index: int = 0,
 ) -> str:
     """Attach Playwright to the visible Chromium browser you can see over noVNC."""
-    info = _browser.attach(cdp_url=cdp_url, context_index=context_index, page_index=page_index)
+    info = _browser.attach(
+        cdp_url=cdp_url, context_index=context_index, page_index=page_index
+    )
     return _json(info.__dict__)
 
 
@@ -139,7 +145,11 @@ def download_fidelity_statements(
     'Brokerage' or the last few account digits.
     """
     account_filter = account_contains.strip() or None
-    return _json(_browser.download_statements(date_yyyy_mm=date_yyyy_mm, out_dir=out_dir, account_contains=account_filter))
+    return _json(
+        _browser.download_statements(
+            date_yyyy_mm=date_yyyy_mm, out_dir=out_dir, account_contains=account_filter
+        )
+    )
 
 
 @mcp.tool()
@@ -182,12 +192,14 @@ def run_import_fidelity(
         timeout=timeout_seconds,
         check=False,
     )
-    return _json({
-        "command": cmd,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout[-12000:],
-        "stderr": completed.stderr[-12000:],
-    })
+    return _json(
+        {
+            "command": cmd,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-12000:],
+            "stderr": completed.stderr[-12000:],
+        }
+    )
 
 
 @mcp.tool()

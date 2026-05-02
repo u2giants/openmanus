@@ -2178,6 +2178,25 @@ async def health():
     return {"status": "ok"}
 
 
+def _fmt_model_name(raw_name: str, pricing: dict) -> str:
+    # Strip "Provider: " prefix (e.g. "DeepSeek: DeepSeek V4 Pro" → "DeepSeek V4 Pro")
+    name = raw_name.split(": ", 1)[-1] if ": " in raw_name else raw_name
+    # Append $/M input / $/M output pricing
+    try:
+        inp = float(pricing.get("prompt", 0)) * 1_000_000
+        out = float(pricing.get("completion", 0)) * 1_000_000
+        def _p(v):
+            if v == 0:
+                return "free"
+            # Show up to 3 sig figs, strip trailing zeros
+            s = f"{v:.3g}"
+            return f"${s}"
+        name = f"{name} {_p(inp)}/{_p(out)}"
+    except Exception:
+        pass
+    return name
+
+
 @app.get("/v1/models")
 async def list_models():
     import os, httpx
@@ -2190,7 +2209,13 @@ async def list_models():
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
                 if resp.status_code == 200:
-                    return resp.json()
+                    data = resp.json()
+                    for m in data.get("data", []):
+                        m["name"] = _fmt_model_name(
+                            m.get("name", m.get("id", "")),
+                            m.get("pricing", {}),
+                        )
+                    return data
         except Exception as e:
             logger.warning(f"Failed to fetch OpenRouter models: {e}")
     return {

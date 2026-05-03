@@ -5,6 +5,10 @@ services:
     pull_policy: always
     restart: unless-stopped
     entrypoint: ["./entrypoint.sh"]
+    dns:
+      - 185.12.64.1
+      - 185.12.64.2
+      - 8.8.8.8
     environment:
       - 'OPENAI_API_KEY=${OPENAI_API_KEY}'
       - 'DAYTONA_API_KEY=${DAYTONA_API_KEY}'

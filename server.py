@@ -2642,6 +2642,14 @@ async def chat_completions(request: Request):
                         selected_tool_names=_owui_selected or None,
                     )
 
+                # Force app.logger to initialise NOW (it calls _logger.remove() +
+                # re-adds handlers). If we add our sink first, app.logger's
+                # define_log_level() wipes it and the later remove(sink_id) fails.
+                try:
+                    import app.logger  # noqa: F401
+                except Exception:
+                    pass
+
                 _MARKERS = (
                     "Executing step",
                     "✨",
@@ -2678,7 +2686,10 @@ async def chat_completions(request: Request):
                         selected_tool_names=_owui_selected or None,
                     )
                 finally:
-                    _loguru.remove(sink_id)
+                    try:
+                        _loguru.remove(sink_id)
+                    except Exception:
+                        pass
                     await progress_q.put(None)  # sentinel: agent finished
 
             agent_task = asyncio.create_task(_run_with_sink())

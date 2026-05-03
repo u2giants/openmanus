@@ -2560,25 +2560,34 @@ def _fmt_model_name(raw_name: str, pricing: dict) -> str:
     return name
 
 
+_models_cache: dict | None = None
+
+
 @app.get("/v1/models")
 async def list_models():
-    import os
+    global _models_cache
     import httpx
 
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            "https://openrouter.ai/api/v1/models/user",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        for m in data.get("data", []):
-            m["name"] = _fmt_model_name(
-                m.get("name", m.get("id", "")),
-                m.get("pricing", {}),
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://openrouter.ai/api/v1/models/user",
+                headers={"Authorization": f"Bearer {api_key}"},
             )
-        return data
+            resp.raise_for_status()
+            data = resp.json()
+            for m in data.get("data", []):
+                m["name"] = _fmt_model_name(
+                    m.get("name", m.get("id", "")),
+                    m.get("pricing", {}),
+                )
+            _models_cache = data
+            return data
+    except Exception:
+        if _models_cache is not None:
+            return _models_cache
+        raise
 
 
 @app.post("/v1/chat/completions")

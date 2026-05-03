@@ -6,6 +6,9 @@ on:
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
+      - 'cdp_proxy.py'
+      - 'novnc-startup.sh'
+      - '.github/**'
   workflow_dispatch:
 
 env:
@@ -14,7 +17,32 @@ env:
   SMOKE_BASE_URL: https://manus.designflow.app
 
 jobs:
-  build-and-push:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+      compose: ${{ steps.filter.outputs.compose }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            image:
+              - '**'
+              - '!docker-compose.yaml'
+              - '!cdp_proxy.py'
+              - '!novnc-startup.sh'
+              - '!.github/**'
+              - '!**/*.md'
+              - '!**/*.txt'
+            compose:
+              - 'docker-compose.yaml'
+
+  # Full build + deploy when image source files change.
+  build-and-deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -82,12 +110,38 @@ jobs:
           fi
           echo "Deploy triggered successfully (HTTP $status)"
 
-  # Post-deploy smoke check — catches stale Traefik proxy overrides and broken routes.
-  # Origin: 2026-04-18 incident where a stale dynamic config at
-  #   /data/coolify/proxy/dynamic/tool-manager.yaml routed /admin/* to a dead
-  #   upstream, causing 502 Bad Gateway on /admin/tools with no CI signal.
+  # Compose-only change: sync to Coolify DB without triggering a deploy.
+  # The updated compose takes effect on the next image-triggered deploy.
+  sync-compose:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.compose == 'true' && needs.detect-changes.outputs.image != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync compose to Coolify DB (no deploy)
+        env:
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          COMPOSE=$(base64 -w 0 docker-compose.yaml)
+          response=$(curl -s -w "\n%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"docker_compose_raw\": \"$COMPOSE\"}" \
+            "http://178.156.180.212:8000/api/v1/services/e10kwzww46ljhrgz1qj08j6a")
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+          echo "Coolify sync response: $body"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Compose sync failed with HTTP $status"
+            exit 1
+          fi
+          echo "Compose synced to Coolify DB — takes effect on next deploy (HTTP $status)"
+
+  # Post-deploy smoke check. Only runs when a real deploy happened.
   smoke-check:
-    needs: build-and-push
+    needs: build-and-deploy
     runs-on: ubuntu-latest
     steps:
       - name: Wait for Coolify deployment to settle
